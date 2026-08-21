@@ -28,7 +28,8 @@ export const RlmKernelInputSchema = z.object({
     .describe('Cell timeout in seconds.'),
 });
 
-export type RlmKernelInput = z.infer<typeof RlmKernelInputSchema>;
+export type RlmKernelInput = z.input<typeof RlmKernelInputSchema>;
+export type ResolvedRlmKernelInput = z.output<typeof RlmKernelInputSchema>;
 
 export interface IRlmKernelTool extends AgentTool<RlmKernelInput> {
   readonly _serviceBrand: undefined;

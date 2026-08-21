@@ -8,17 +8,23 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { ensureMainAgent } from '#/session/agentLifecycle/mainAgent';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import { IAgentProfileService } from '#/agent/profile/profile';
+import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { IAgentTaskService } from '#/agent/task/task';
+import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import { IAgentToolActivationService } from '#/agent/toolActivation/toolActivation';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import type { ISessionScopeHandle } from '#/_base/di/scope';
 import { bootstrap, logSeed, resolveLoggingConfig } from '#/index';
+import type { ToolCall } from '#/kosong/contract/message';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { IAgentRlmKernel } from '#/features/rlm/agentRlmKernel';
 import { RLM_PYTHON_WORKER } from '#/features/rlm/pythonWorker';
 import { ISessionRlmKernelPool } from '#/features/rlm/sessionRlmKernelPool';
-import { RlmKernelInputSchema } from '#/features/rlm/tools/rlm-kernel/rlm-kernel';
+import {
+  RlmKernelInputSchema,
+  type RlmKernelInput,
+} from '#/features/rlm/tools/rlm-kernel/rlm-kernel';
 
 const roots: string[] = [];
 const apps: Array<{ dispose(): void }> = [];
@@ -124,8 +130,111 @@ describe('RLM feature', () => {
 
   it('defaults cells to inspect access and exposes no model recursion API', () => {
     expect(RlmKernelInputSchema.parse({ code: '1 + 1' }).access).toBe('inspect');
+    expect(RLM_PYTHON_WORKER).toContain(
+      '_access = "work" if request.get("access") == "work" else "inspect"',
+    );
+    expect(RLM_PYTHON_WORKER).not.toContain('request.get("access", "work")');
     expect(RLM_PYTHON_WORKER).not.toContain('agent.run');
     expect(RLM_PYTHON_WORKER).not.toContain('async def run(self, prompt');
+  });
+
+  it('normalizes omitted access before permission metadata in every permission mode', async () => {
+    const { root, agent } = await createHarness();
+    await agent.accessor.get(IAgentToolActivationService).activate();
+    const tool = agent.accessor.get(IAgentToolRegistryService).resolve('RlmKernel');
+    const permissionMode = agent.accessor.get(IAgentPermissionModeService);
+    const omitted: RlmKernelInput = { code: '21 * 2' };
+    const explicit: RlmKernelInput = { code: '21 * 2', access: 'inspect' };
+    const snapshots: unknown[] = [];
+
+    expect(tool).toBeDefined();
+    for (const mode of ['manual', 'yolo', 'auto'] as const) {
+      permissionMode.setMode(mode);
+      const omittedExecution = await tool!.resolveExecution(omitted);
+      const explicitExecution = await tool!.resolveExecution(explicit);
+      if (!('execute' in omittedExecution) || !('execute' in explicitExecution)) {
+        throw new Error('Expected runnable RlmKernel executions.');
+      }
+      expect(omittedExecution.approvalRule).toBe('RlmKernel(inspect)');
+      expect(omittedExecution.accesses).toEqual([
+        { kind: 'file', operation: 'read', path: join(root, 'work'), recursive: true },
+      ]);
+      expect(omittedExecution.description).toBe(explicitExecution.description);
+      expect(omittedExecution.display).toEqual(explicitExecution.display);
+      expect(omittedExecution.accesses).toEqual(explicitExecution.accesses);
+      snapshots.push({
+        approvalRule: omittedExecution.approvalRule,
+        accesses: omittedExecution.accesses,
+        display: omittedExecution.display,
+      });
+    }
+
+    expect(snapshots[1]).toEqual(snapshots[0]);
+    expect(snapshots[2]).toEqual(snapshots[0]);
+  });
+
+  it('executes omitted and explicit inspect calls through every permission mode', async () => {
+    const { agent } = await createHarness();
+    await agent.accessor.get(IAgentToolActivationService).activate();
+    const permissionMode = agent.accessor.get(IAgentPermissionModeService);
+    const executor = agent.accessor.get(IAgentToolExecutorService);
+    executor.onBeforeExecuteTool((event) => {
+      event.allow();
+    });
+
+    for (const mode of ['manual', 'yolo', 'auto'] as const) {
+      permissionMode.setMode(mode);
+      for (const [variant, args] of [
+        ['omitted', { code: `print("${mode}:omitted")` }],
+        ['explicit', { code: `print("${mode}:explicit")`, access: 'inspect' }],
+      ] as const) {
+        const call: ToolCall = {
+          type: 'function',
+          id: `call_${mode}_${variant}`,
+          name: 'RlmKernel',
+          arguments: JSON.stringify(args),
+        };
+        const results = [];
+        for await (const result of executor.execute([call], {
+          turnId: 0,
+          signal: new AbortController().signal,
+        })) {
+          results.push(result);
+        }
+        expect(results).toHaveLength(1);
+        expect(results[0]?.result.isError).not.toBe(true);
+        expect(results[0]?.result.output).toContain(`${mode}:${variant}`);
+        expect(results[0]?.result.approvalRule).toBe('RlmKernel(inspect)');
+      }
+    }
+  });
+
+  it('fails closed at the kernel boundary unless work access is explicit', async () => {
+    const { root, agent } = await createHarness();
+    const kernel = agent.accessor.get(IAgentRlmKernel);
+    const signal = new AbortController().signal;
+
+    for (const [name, access] of [
+      ['missing', undefined],
+      ['unknown', 'elevated'],
+    ] as const) {
+      const path = join(root, 'work', `${name}.txt`);
+      const result = await kernel.execute(
+        `from pathlib import Path\nPath(${JSON.stringify(path)}).write_text("unsafe")`,
+        { access: access as never, timeoutMs: 30_000, signal },
+      );
+      expect(result.isError).toBe(true);
+      expect(result.output).toContain('RlmKernel inspect mode blocks file writes');
+      expect(existsSync(path)).toBe(false);
+    }
+
+    const allowedPath = join(root, 'work', 'explicit-work.txt');
+    const allowed = await kernel.execute(
+      `from pathlib import Path\nPath(${JSON.stringify(allowedPath)}).write_text("allowed")`,
+      { access: 'work', timeoutMs: 30_000, signal },
+    );
+    expect(allowed.isError).toBe(false);
+    expect(await readFile(allowedPath, 'utf8')).toBe('allowed');
   });
 
   it('keeps Python state, checkpoints it, and restores after worker eviction', async () => {

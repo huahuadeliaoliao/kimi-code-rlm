@@ -5,6 +5,10 @@ import type { RlmOutputReference } from './rlmOutputStore';
 
 export type RlmCellAccess = 'inspect' | 'work';
 
+export function normalizeRlmCellAccess(access: unknown): RlmCellAccess {
+  return access === 'work' ? 'work' : 'inspect';
+}
+
 export interface RlmVariableInfo {
   readonly name: string;
   readonly type: string;

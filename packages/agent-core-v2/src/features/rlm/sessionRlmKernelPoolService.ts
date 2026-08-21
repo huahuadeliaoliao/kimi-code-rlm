@@ -18,6 +18,7 @@ import {
   type RlmKernelBinding,
   type RlmVariableInfo,
   ISessionRlmKernelPool as ISessionRlmKernelPoolToken,
+  normalizeRlmCellAccess,
 } from './sessionRlmKernelPool';
 
 const MAX_ACTIVE_KERNELS = 2;
@@ -521,6 +522,7 @@ export class SessionRlmKernelPoolService extends Disposable implements ISessionR
       const hostRequestHandler = request.onHostRequest;
       const execution = slot.worker.execute({
         ...request,
+        access: normalizeRlmCellAccess(request.access),
         onHostRequest:
           hostRequestHandler === undefined
             ? undefined

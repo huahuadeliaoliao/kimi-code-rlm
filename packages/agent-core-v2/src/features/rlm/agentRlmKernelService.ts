@@ -10,6 +10,7 @@ import type { AgentRlmExecuteOptions, IAgentRlmKernel } from './agentRlmKernel';
 import { IRlmPythonRuntime } from './rlmPythonRuntime';
 import {
   ISessionRlmKernelPool,
+  normalizeRlmCellAccess,
   type RlmExecuteResult,
   type RlmKernelBinding,
   type RlmVariableInfo,
@@ -34,15 +35,16 @@ export class AgentRlmKernelService extends Disposable implements IAgentRlmKernel
   }
 
   execute(code: string, options: AgentRlmExecuteOptions): Promise<RlmExecuteResult> {
+    const access = normalizeRlmCellAccess(options.access);
     return this.serialize(async () =>
       this.pool.execute(await this.binding(), {
         code,
-        access: options.access,
+        access,
         timeoutMs: options.timeoutMs,
         signal: options.signal,
         onUpdate: options.onUpdate,
         onHostRequest: (request, hostSignal) => {
-          if (options.access === 'inspect' && MUTATING_HOST_REQUESTS.has(request.type)) {
+          if (access === 'inspect' && MUTATING_HOST_REQUESTS.has(request.type)) {
             throw new Error2(
               ErrorCodes.RLM_PROTOCOL_ERROR,
               `RlmKernel inspect mode blocks ${request.type}.`,

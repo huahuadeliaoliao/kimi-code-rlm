@@ -361,7 +361,7 @@ def _handle_execute(request):
     global _access, _active_request_id, _effects
     request_id = request["id"]
     _active_request_id = request_id
-    _access = request.get("access", "work")
+    _access = "work" if request.get("access") == "work" else "inspect"
     _effects = {"filesWritten": set(), "filesDeleted": set(), "subprocessStarted": False}
     before_threads = {thread.ident for thread in threading.enumerate()}
     ok = True

@@ -14,6 +14,7 @@ import {
   IRlmKernelTool,
   RLM_DEFAULT_TIMEOUT_S,
   RlmKernelInputSchema,
+  type ResolvedRlmKernelInput,
   type RlmKernelInput,
 } from './rlm-kernel';
 
@@ -38,26 +39,27 @@ export class RlmKernelTool implements IRlmKernelTool {
   ) {}
 
   resolveExecution(input: RlmKernelInput): ToolExecution {
-    const firstLine = input.code.trim().split(/\r?\n/, 1)[0] ?? '';
+    const resolved = RlmKernelInputSchema.parse(input);
+    const firstLine = resolved.code.trim().split(/\r?\n/, 1)[0] ?? '';
     const preview = firstLine.length > 60 ? `${firstLine.slice(0, 60)}…` : firstLine;
     return {
       description: preview.length > 0 ? `Python: ${preview}` : 'Executing Python',
       display: {
         kind: 'generic',
-        summary: `${input.access === 'inspect' ? 'Inspect' : 'Work'} in persistent Python`,
-        detail: { code: input.code },
+        summary: `${resolved.access === 'inspect' ? 'Inspect' : 'Work'} in persistent Python`,
+        detail: { code: resolved.code },
       },
-      approvalRule: literalRulePattern(this.name, input.access),
+      approvalRule: literalRulePattern(this.name, resolved.access),
       accesses:
-        input.access === 'inspect'
+        resolved.access === 'inspect'
           ? ToolAccesses.readTree(this.workspace.workDir)
           : ToolAccesses.all(),
-      execute: (context) => this.execute(input, context),
+      execute: (context) => this.execute(resolved, context),
     };
   }
 
   private async execute(
-    input: RlmKernelInput,
+    input: ResolvedRlmKernelInput,
     context: ExecutableToolContext,
   ): Promise<ExecutableToolResult> {
     try {
