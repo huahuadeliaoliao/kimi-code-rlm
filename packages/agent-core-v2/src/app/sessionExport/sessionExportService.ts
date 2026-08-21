@@ -1,4 +1,4 @@
-import { join, resolve } from 'pathe';
+import { join, relative, resolve } from 'pathe';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import type { ISessionScopeHandle } from '#/_base/di/scope';
@@ -16,6 +16,7 @@ import {
 import { ErrorCodes, Error2 } from '#/errors';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { isNonPortableSessionRuntimePath } from '#/session/runtimeState/sessionRuntimeState';
 
 import { buildExportManifest, type ExportSessionManifestSummary } from './manifest';
 import {
@@ -201,7 +202,9 @@ export async function exportSessionDirectory(input: {
     const sessionScan = await scanSessionWire(sessionDir, input.signal);
     const stableSessionLog = sessionLogSource;
     const selectedSessionFiles: SessionZipEntry[] = sessionFiles.filter(
-      (file) => file !== sessionLogPath,
+      (file) =>
+        file !== sessionLogPath &&
+        !isNonPortableSessionRuntimePath(relative(sessionDir, file)),
     );
     if (stableSessionLog !== undefined) {
       selectedSessionFiles.push({ path: sessionLogPath, source: stableSessionLog });

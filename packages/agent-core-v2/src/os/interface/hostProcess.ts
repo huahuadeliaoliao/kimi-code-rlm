@@ -1,4 +1,4 @@
-import type { Readable, Writable } from 'node:stream';
+import type { Duplex, Readable, Writable } from 'node:stream';
 
 import { registerErrorDomain, type ErrorDomain } from '#/_base/errors/codes';
 import { Error2, type Error2Options } from '#/_base/errors/errors';
@@ -11,6 +11,7 @@ export interface HostProcessOptions {
   readonly detached?: boolean;
   readonly windowsHide?: boolean;
   readonly mergeStderr?: boolean;
+  readonly controlPipe?: boolean;
   readonly timeout?: number;
 }
 
@@ -22,6 +23,7 @@ export interface IHostProcess {
   readonly stdin: Writable;
   readonly stdout: Readable;
   readonly stderr: Readable;
+  readonly control?: Duplex;
   wait(): Promise<number>;
   kill(signal?: NodeJS.Signals): Promise<void>;
   dispose(): void | Promise<void>;

@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
-import type { Readable, Writable } from 'node:stream';
+import type { Duplex, Readable, Writable } from 'node:stream';
 
 import { BufferedReadable } from '#/_base/execEnv/bufferedReadable';
 import { LifecycleScope } from '#/app/scopes';
@@ -20,7 +20,9 @@ function buildSpawnOptions(options: HostProcessOptions): SpawnOptions {
   const spawnOptions: SpawnOptions = {
     cwd: options.cwd,
     env: buildEnv(options.env),
-    stdio: options.mergeStderr ? ['pipe', 'pipe', 'pipe'] : ['pipe', 'pipe', 'pipe'],
+    stdio: options.controlPipe
+      ? ['pipe', 'pipe', 'pipe', 'pipe']
+      : ['pipe', 'pipe', 'pipe'],
     detached,
     windowsHide: options.windowsHide ?? true,
   };
@@ -60,6 +62,7 @@ class HostProcess implements IHostProcess {
   readonly stdin: Writable;
   readonly stdout: Readable;
   readonly stderr: Readable;
+  readonly control?: Duplex;
   readonly pid: number;
 
   private readonly _child: ChildProcess;
@@ -67,7 +70,7 @@ class HostProcess implements IHostProcess {
   private readonly _exitPromise: Promise<number>;
   private _disposed = false;
 
-  constructor(child: ChildProcess, mergeStderr: boolean) {
+  constructor(child: ChildProcess, mergeStderr: boolean, controlPipe: boolean) {
     if (child.stdin === null || child.stdout === null) {
       throw new HostProcessError(
         HostProcessErrorCode.SpawnFailed,
@@ -80,6 +83,13 @@ class HostProcess implements IHostProcess {
         'Process must be created with stderr pipe unless mergeStderr is set.',
       );
     }
+    const control = child.stdio[3];
+    if (controlPipe && (control === null || typeof control === 'number')) {
+      throw new HostProcessError(
+        HostProcessErrorCode.SpawnFailed,
+        'Process must be created with a bidirectional control pipe.',
+      );
+    }
 
     this._child = child;
     this.stdin = child.stdin;
@@ -87,6 +97,7 @@ class HostProcess implements IHostProcess {
     this.stderr = mergeStderr
       ? this.stdout
       : new BufferedReadable(child.stderr as Readable);
+    this.control = controlPipe ? (control as Duplex) : undefined;
     this.pid = child.pid ?? -1;
 
     this._exitPromise = new Promise<number>((resolve, reject) => {
@@ -159,6 +170,7 @@ class HostProcess implements IHostProcess {
     if (this.stderr !== this.stdout) {
       this.stderr.destroy();
     }
+    this.control?.destroy();
   }
 }
 
@@ -185,7 +197,11 @@ export class HostProcessService implements IHostProcessService {
         },
       );
     }
-    return new HostProcess(child, options.mergeStderr ?? false);
+    return new HostProcess(
+      child,
+      options.mergeStderr ?? false,
+      options.controlPipe ?? false,
+    );
   }
 }
 

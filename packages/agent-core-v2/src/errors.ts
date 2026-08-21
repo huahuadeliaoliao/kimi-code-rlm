@@ -19,6 +19,7 @@ import { OsFsErrors } from '#/os/interface/hostFsErrors';
 import { OsProcessErrors } from '#/os/interface/hostProcess';
 import { PluginErrors } from '#/app/plugin/errors';
 import { ProfileErrors } from '#/agent/profile/errors';
+import { RlmErrors } from '#/features/rlm/errors';
 import { PromptErrors } from '#/agent/prompt/errors';
 import { ModelsDevImportErrors } from '#/app/kosongConfig/errors';
 import { SessionExportErrors } from '#/app/sessionExport/errors';
@@ -56,6 +57,7 @@ export { OsFsErrors } from '#/os/interface/hostFsErrors';
 export { OsProcessErrors } from '#/os/interface/hostProcess';
 export { PluginErrors } from '#/app/plugin/errors';
 export { ProfileErrors } from '#/agent/profile/errors';
+export { RlmErrors } from '#/features/rlm/errors';
 export { PromptErrors } from '#/agent/prompt/errors';
 export { ModelsDevImportErrors } from '#/app/kosongConfig/errors';
 export { SessionExportErrors } from '#/app/sessionExport/errors';
@@ -91,6 +93,7 @@ export const ErrorCodes = {
   ...OsProcessErrors.codes,
   ...PluginErrors.codes,
   ...ProfileErrors.codes,
+  ...RlmErrors.codes,
   ...PromptErrors.codes,
   ...ModelsDevImportErrors.codes,
   ...SessionExportErrors.codes,

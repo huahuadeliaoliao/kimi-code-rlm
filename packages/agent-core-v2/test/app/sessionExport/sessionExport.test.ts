@@ -89,10 +89,13 @@ describe('sessionExport', () => {
   it('exports a v2 session directory with per-agent wire activity and optional global log', async () => {
     const tmp = await mkdtemp(join(tmpdir(), 'session-export-test-'));
     const sessionDir = join(tmp, 'sessions', 'ws_demo', 'ses_demo');
-    await mkdir(join(sessionDir, 'agents', 'main'), { recursive: true });
+    await mkdir(join(sessionDir, 'agents', 'main', 'rlm'), { recursive: true });
+    await mkdir(join(sessionDir, 'rlm', 'blobs'), { recursive: true });
     await mkdir(join(sessionDir, 'logs'), { recursive: true });
     await writeFile(join(sessionDir, 'state.json'), '{}\n', 'utf-8');
     await writeFile(join(sessionDir, 'logs', 'kimi-code.log'), '{"msg":"session"}\n', 'utf-8');
+    await writeFile(join(sessionDir, 'agents', 'main', 'rlm', 'checkpoint.json'), '{}\n', 'utf-8');
+    await writeFile(join(sessionDir, 'rlm', 'blobs', 'state.bin'), 'runtime', 'utf-8');
     await writeFile(
       join(sessionDir, 'agents', 'main', 'wire.jsonl'),
       [
