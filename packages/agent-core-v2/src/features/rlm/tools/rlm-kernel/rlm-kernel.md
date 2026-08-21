@@ -8,4 +8,10 @@ Use Python standard-library APIs for file inspection, search, transformation, an
 
 Large cell and task output returns a compact preview and an opaque handle. Read or search it with `await rlm.output.read(...)` and `await rlm.output.search(...)` rather than printing it again. `rlm.state()` reports the safe namespace inventory after compaction or recovery. Credentials, live process handles, open files, synchronization objects, heavy framework objects, and oversized values are excluded from automatic checkpoints.
 
-Do not use `subprocess.Popen` or background threads for detached work. Run tests, builds, training, servers, polling, and other long-lived commands with `await rlm.task.run(...)`; control them with `wait(...)`, `list()`, `output(...)`, and `stop(...)`.
+**Long-running work**
+
+Do not keep work in a foreground cell when it may exceed about one minute, has uncertain duration, or starts a training run, server, or poller. Cell timeout or cancellation can kill its subprocess tree.
+
+- **Local:** launch it with `task = await rlm.task.run(..., timeout=...)`, return from the cell, and later use bounded `rlm.task.wait()`, `rlm.task.list()`, `rlm.task.output()`, or `rlm.task.stop()` calls. Use `disable_timeout=True` only for an intentionally open-ended service.
+- **Remote over SSH:** detach inside the remote shell with its job manager or `nohup`/`setsid`; use `</dev/null`, redirect stdout and stderr, and record the job or PID plus status and log files. Let SSH return promptly, then poll with separate short calls.
+- Do not substitute `subprocess.Popen`, bare `&`, background threads, a near-limit cell timeout, or a long sleep/poll loop.
