@@ -245,7 +245,7 @@ export function isRetryableGenerateError(error: unknown): boolean {
     if (error instanceof APIProviderQuotaExhaustedError) {
       return false;
     }
-    return [408, 409, 429, 500, 502, 503, 504, 529].includes(error.statusCode);
+    return [408, 409, 429, 499, 500, 502, 503, 504, 524, 529].includes(error.statusCode);
   }
   return error instanceof ChatProviderError && !isImageFormatError(error);
 }

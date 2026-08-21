@@ -113,7 +113,9 @@ describe('isRetryableGenerateError', () => {
     expect(isRetryableGenerateError(new APIProviderOverloadedError(529, 'Overloaded'))).toBe(
       true,
     );
+    expect(isRetryableGenerateError(new APIStatusError(499, 'Upstream request closed'))).toBe(true);
     expect(isRetryableGenerateError(new APIStatusError(503, 'Service unavailable'))).toBe(true);
+    expect(isRetryableGenerateError(new APIStatusError(524, 'Upstream timed out'))).toBe(true);
   });
 
   it('does not retry deterministic client failures', () => {

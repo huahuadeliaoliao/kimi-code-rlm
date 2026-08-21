@@ -119,6 +119,57 @@ describe('stepRetry plugin', () => {
     ]);
   });
 
+  it.each([499, 524])('retries transient HTTP %i responses', async (statusCode) => {
+    vi.useFakeTimers();
+    let calls = 0;
+    ctx = createTestAgent(
+      llmGenerateServices(async () => {
+        calls += 1;
+        if (calls === 1) throw new APIStatusError(statusCode, 'transient upstream failure');
+        return {
+          id: `retry-${statusCode}`,
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: 'recovered' }],
+            toolCalls: [],
+          },
+          usage: emptyUsage(),
+          finishReason: 'completed',
+          rawFinishReason: 'stop',
+        };
+      }),
+    );
+
+    const result = await runTurn(1);
+
+    expect(result).toEqual({ type: 'completed', steps: 2, truncated: false });
+    expect(calls).toBe(2);
+    expect(rpcEvents('turn.step.retrying')).toEqual([
+      expect.objectContaining({
+        args: expect.objectContaining({ statusCode, failedAttempt: 1, nextAttempt: 2 }),
+      }),
+    ]);
+  });
+
+  it('does not retry HTTP 499 after the local turn is cancelled', async () => {
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    let calls = 0;
+    ctx = createTestAgent(
+      llmGenerateServices(async () => {
+        calls += 1;
+        controller.abort(new Error('stop'));
+        throw new APIStatusError(499, 'client closed request');
+      }),
+    );
+
+    const result = await runTurn(1, controller.signal);
+
+    expect(result.type).toBe('cancelled');
+    expect(calls).toBe(1);
+    expect(rpcEvents('turn.step.retrying')).toEqual([]);
+  });
+
   it('pairs every retried step.begin with a step.end in the wire', async () => {
     vi.useFakeTimers();
     let calls = 0;

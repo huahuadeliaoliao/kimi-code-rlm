@@ -161,7 +161,7 @@ describe('isRetryableGenerateError', () => {
     expect(isRetryableGenerateError(new APIEmptyResponseError('empty'))).toBe(true);
   });
 
-  it.each([408, 409, 429, 500, 502, 503, 504, 529])(
+  it.each([408, 409, 429, 499, 500, 502, 503, 504, 524, 529])(
     'treats HTTP %i as retryable',
     (statusCode) => {
       expect(isRetryableGenerateError(new APIStatusError(statusCode, 'retryable'))).toBe(true);
