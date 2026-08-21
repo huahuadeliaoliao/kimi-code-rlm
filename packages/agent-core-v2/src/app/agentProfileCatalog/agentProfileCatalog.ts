@@ -20,6 +20,7 @@ export interface AgentProfileContext {
   readonly cwdListing?: string;
   readonly agentsMd?: string;
   readonly additionalDirsInfo?: string;
+  readonly additionalDirs?: readonly string[];
   readonly osKind?: string;
   readonly shellName?: string;
   readonly shellPath?: string;

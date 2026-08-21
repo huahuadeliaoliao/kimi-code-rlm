@@ -16,6 +16,7 @@ import { AgentPlanService } from '#/features/plan/planService';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { AgentStateService } from '#/agent/state/agentStateService';
 import { IAgentToolApprovalService } from '#/agent/toolApproval/toolApproval';
+import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import type {
   BeforeExecuteDecision,
@@ -180,6 +181,10 @@ describe('AgentPlanService plan-guard listener', () => {
         reg.definePartialInstance(IAgentTelemetryContextService, { set: () => {} });
         reg.defineInstance(IAgentToolExecutorService, executorEvents.executor);
         reg.defineInstance(IAgentToolApprovalService, toolApproval);
+        reg.definePartialInstance(IAgentToolPolicyService, {
+          isToolActive: (name: string) =>
+            name === 'EnterPlanMode' || name === 'ExitPlanMode',
+        });
         reg.defineInstance(IAgentPermissionModeService, stubPermissionModeService(() => mode));
         reg.defineInstance(ITelemetryService, recordingTelemetry(records));
         reg.defineInstance(IAgentStateService, new AgentStateService());

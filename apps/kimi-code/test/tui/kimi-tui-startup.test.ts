@@ -357,7 +357,7 @@ describe('KimiTUI startup', () => {
     expect(transcript).toContain('No session yet — one will be created on your first message.');
   });
 
-  it('shows config defaults in appState before the lazy session exists (v2)', async () => {
+  it('ignores the plan default while hydrating other config defaults (v2)', async () => {
     const harness = makeHarness(makeSession(), {
       getConfig: vi.fn(async () => ({
         models: {
@@ -379,7 +379,8 @@ describe('KimiTUI startup', () => {
       model: 'k2',
       maxContextTokens: 200,
       permissionMode: 'auto',
-      planMode: true,
+      planMode: false,
+      configDefaultPlanMode: false,
       thinkingEffort: 'high',
     });
   });
@@ -429,7 +430,7 @@ describe('KimiTUI startup', () => {
     expect(driver.state.appState.thinkingEffort).toBe('medium');
   });
 
-  it('hydrates permission/plan defaults after a session-less v2 login', async () => {
+  it('hydrates permission but ignores plan defaults after a session-less v2 login', async () => {
     let loggedIn = false;
     const harness = makeHarness(makeSession(), {
       getConfig: vi.fn(async () =>
@@ -471,8 +472,8 @@ describe('KimiTUI startup', () => {
       sessionId: '',
       model: 'k2',
       permissionMode: 'auto',
-      planMode: true,
-      configDefaultPlanMode: true,
+      planMode: false,
+      configDefaultPlanMode: false,
     });
   });
 

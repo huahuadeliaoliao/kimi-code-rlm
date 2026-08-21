@@ -570,13 +570,11 @@ export abstract class SDKRpcClientBase {
     return rpc.addAdditionalDir({ sessionId: input.id, path: input.path, persist: input.persist });
   }
 
-  async startBtw(input: SessionIdRpcInput): Promise<string> {
-    const agentId = this.interactiveAgentId;
-    const rpc = await this.getRpc();
-    return rpc.startBtw({
-      sessionId: input.sessionId,
-      agentId,
-    });
+  async startBtw(_input: SessionIdRpcInput): Promise<string> {
+    throw new KimiError(
+      ErrorCodes.REQUEST_INVALID,
+      'Side questions are disabled in this local single-agent RLM build.',
+    );
   }
 
   async cancel(input: SessionIdRpcInput): Promise<void> {

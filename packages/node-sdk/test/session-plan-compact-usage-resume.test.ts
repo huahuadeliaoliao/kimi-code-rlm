@@ -20,7 +20,7 @@ afterEach(async () => {
 });
 
 describe('Session plan, compact, usage, and resume APIs', () => {
-  it('sets plan mode through manualEnterPlan and clears the active plan file', async () => {
+  it('rejects plan mode while keeping compatibility reads inert', async () => {
     const homeDir = await makeTempDir(tempDirs, 'kimi-sdk-plan-home-');
     const workDir = await makeTempDir(tempDirs, 'kimi-sdk-plan-work-');
     await writeTestConfig(homeDir);
@@ -28,60 +28,28 @@ describe('Session plan, compact, usage, and resume APIs', () => {
 
     try {
       const session = await harness.createSession({ id: 'ses_plan_runtime', workDir });
-
-      const planOn = waitForSessionEvent(
-        session,
-        (event) => event.type === 'agent.status.updated' && event.planMode === true,
-      );
-      await session.setPlanMode(true);
-      await expect(planOn).resolves.toMatchObject({
-        type: 'agent.status.updated',
-        planMode: true,
+      await expect(session.setPlanMode(true)).rejects.toMatchObject({
+        code: 'session.plan_mode_invalid',
       });
-
+      await expect(session.setPlanMode(false)).resolves.toBeUndefined();
       await expect(session.clearPlan()).resolves.toBeUndefined();
-      await expect(session.getPlan()).resolves.toMatchObject({
-        content: '',
-      });
-      await session.cancel();
-
-      const planOff = waitForSessionEvent(
-        session,
-        (event) => event.type === 'agent.status.updated' && event.planMode === false,
-      );
-      await session.setPlanMode(false);
-      await expect(planOff).resolves.toMatchObject({
-        type: 'agent.status.updated',
-        planMode: false,
-      });
+      await expect(session.getPlan()).resolves.toBeNull();
     } finally {
       await harness.close();
     }
   });
 
-  it('prepares the plans directory without creating plan files on repeated toggles', async () => {
+  it('rejects plan mode during session creation without creating a session', async () => {
     const homeDir = await makeTempDir(tempDirs, 'kimi-sdk-plan-toggle-home-');
     const workDir = await makeTempDir(tempDirs, 'kimi-sdk-plan-toggle-work-');
     await writeTestConfig(homeDir);
     const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
 
     try {
-      const session = await harness.createSession({ id: 'ses_plan_toggle_runtime', workDir });
-
-      await session.setPlanMode(true);
-      const firstPlan = await session.getPlan();
-      if (firstPlan === null) throw new Error('expected first plan');
-      const plansDir = dirname(firstPlan.path);
-      await expect(markdownFiles(plansDir)).resolves.toEqual([]);
-
-      await session.setPlanMode(false);
-      await session.setPlanMode(true);
-      const secondPlan = await session.getPlan();
-      if (secondPlan === null) throw new Error('expected second plan');
-
-      expect(secondPlan.path).not.toBe(firstPlan.path);
-      expect(dirname(secondPlan.path)).toBe(plansDir);
-      await expect(markdownFiles(plansDir)).resolves.toEqual([]);
+      await expect(
+        harness.createSession({ id: 'ses_plan_toggle_runtime', workDir, planMode: true }),
+      ).rejects.toMatchObject({ code: 'session.plan_mode_invalid' });
+      expect(harness.getSession('ses_plan_toggle_runtime')).toBeUndefined();
     } finally {
       await harness.close();
     }
@@ -120,7 +88,7 @@ describe('Session plan, compact, usage, and resume APIs', () => {
     }
   });
 
-  it('resumes a persisted session and restores runtime plan mode from wire history', async () => {
+  it('resumes a persisted session with plan mode disabled', async () => {
     const homeDir = await makeTempDir(tempDirs, 'kimi-sdk-resume-home-');
     const workDir = await makeTempDir(tempDirs, 'kimi-sdk-resume-work-');
     await writeTestConfig(homeDir);
@@ -132,10 +100,6 @@ describe('Session plan, compact, usage, and resume APIs', () => {
         workDir,
         model: 'test-model',
       });
-      await created.setPlanMode(true);
-      await expect(created.getPlan()).resolves.toMatchObject({
-        content: '',
-      });
       await created.close();
       expect(harness.getSession(created.id)).toBeUndefined();
 
@@ -145,12 +109,9 @@ describe('Session plan, compact, usage, and resume APIs', () => {
       expect(resumed.workDir).toBe(toPosix(workDir));
       await expect(resumed.getStatus()).resolves.toMatchObject({
         model: 'test-model',
-        planMode: true,
+        planMode: false,
       });
-      await expect(resumed.getPlan()).resolves.toMatchObject({
-        content: '',
-        path: expect.stringContaining('/plans/'),
-      });
+      await expect(resumed.getPlan()).resolves.toBeNull();
       expect(harness.getSession(created.id)).toBe(resumed);
     } finally {
       await harness.close();
@@ -219,11 +180,6 @@ describe('Session plan, compact, usage, and resume APIs', () => {
         },
       });
       await source.createGoal({ objective: 'source objective' });
-      await source.setPlanMode(true);
-      const sourcePlan = await source.getPlan();
-      if (sourcePlan === null) throw new Error('expected source plan');
-      await mkdir(dirname(sourcePlan.path), { recursive: true });
-      await writeFile(sourcePlan.path, 'source plan', 'utf-8');
 
       const fork = await harness.forkSession({
         id: source.id,
@@ -250,13 +206,7 @@ describe('Session plan, compact, usage, and resume APIs', () => {
 
       const forkSummary = fork.summary;
       expect(forkSummary).toBeDefined();
-      const forkPlan = await fork.getPlan();
-      expect(forkPlan).toEqual({
-        id: sourcePlan.id,
-        content: 'source plan',
-        path: toPosix(join(forkSummary!.sessionDir, 'agents', 'main', 'plans', `${sourcePlan.id}.md`)),
-      });
-      expect(forkPlan?.path).not.toBe(sourcePlan.path);
+      await expect(fork.getPlan()).resolves.toBeNull();
       const forkWire = await readFile(
         join(forkSummary!.sessionDir, 'agents', 'main', 'wire.jsonl'),
         'utf-8',
@@ -265,12 +215,7 @@ describe('Session plan, compact, usage, and resume APIs', () => {
         .trim()
         .split('\n')
         .map((line) => JSON.parse(line) as Record<string, unknown>);
-      const enterRecord = forkRecords.find((record) => record['type'] === 'plan_mode.enter');
-      expect(enterRecord).toEqual({
-        type: 'plan_mode.enter',
-        id: sourcePlan.id,
-        time: expect.any(Number),
-      });
+      expect(forkRecords.some((record) => record['type'] === 'plan_mode.enter')).toBe(false);
       expect(forkRecords.find((record) => record['type'] === 'forked')).toEqual({
         type: 'forked',
         time: expect.any(Number),

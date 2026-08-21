@@ -3,23 +3,17 @@ import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IHostEnvironment } from '#/os/interface/hostEnvironment';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IAgentProfileService } from '#/agent/profile/profile';
+import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { loadAgentsMdDetailed } from '#/agent/profile/context';
 import { IAgentAgentsMdReminderService } from '#/agent/agentsMdReminder/agentsMdReminder';
-import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { IAgentSystemReminderService } from '#/agent/systemReminder/systemReminder';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { ErrorCodes, Error2 } from '#/errors';
 import { IAgentLifecycleService, MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
-import { emitAgentRunSpawned, mirrorAgentRun } from '#/session/subagent/mirrorAgentRun';
-import { ISessionSubagentService } from '#/session/subagent/subagent';
 
 import { ISessionInitService } from './sessionInit';
 import { DEFAULT_INIT_PROMPT, initCompletionReminder } from './profile/init';
-
-const INIT_PROFILE_NAME = 'coder';
-const INIT_PARENT_TOOL_CALL_ID = 'generate-agents-md';
-const INIT_DESCRIPTION = 'Initialize AGENTS.md';
 
 export class SessionInitService implements ISessionInitService {
   declare readonly _serviceBrand: undefined;
@@ -28,7 +22,6 @@ export class SessionInitService implements ISessionInitService {
 
   constructor(
     @IAgentLifecycleService private readonly lifecycle: IAgentLifecycleService,
-    @ISessionSubagentService private readonly subagents: ISessionSubagentService,
     @IHostFileSystem private readonly fs: IHostFileSystem,
     @IHostEnvironment private readonly env: IHostEnvironment,
     @IBootstrapService private readonly bootstrap: IBootstrapService,
@@ -52,36 +45,31 @@ export class SessionInitService implements ISessionInitService {
       if (own.modelAlias === undefined) {
         throw new Error2(ErrorCodes.SESSION_INIT_FAILED, 'Main agent has no model bound');
       }
-      const permissionMode = main.accessor.get(IAgentPermissionModeService).mode;
-
-      const child = await this.lifecycle.create({
-        binding: {
-          profile: INIT_PROFILE_NAME,
-          model: own.modelAlias,
-          thinking: own.thinkingLevel,
+      const prompt = main.accessor.get(IAgentPromptService);
+      const turn = await (await prompt.enqueue({
+        message: {
+          role: 'user',
+          content: [{ type: 'text', text: DEFAULT_INIT_PROMPT }],
+          toolCalls: [],
+          origin: { kind: 'system_trigger', name: 'session_init' },
         },
-      });
-      child.accessor.get(IAgentPermissionModeService).setMode(permissionMode);
-
-      emitAgentRunSpawned(main, child.id, {
-        profileName: INIT_PROFILE_NAME,
-        parentToolCallId: INIT_PARENT_TOOL_CALL_ID,
-        description: INIT_DESCRIPTION,
-        runInBackground: false,
-        model: own.modelAlias,
-      });
-
-      const run = await this.subagents.run(
-        child.id,
-        { kind: 'prompt', prompt: DEFAULT_INIT_PROMPT },
-        { signal: controller.signal },
-      );
-      await mirrorAgentRun(main, run, {
-        profileName: INIT_PROFILE_NAME,
-        prompt: DEFAULT_INIT_PROMPT,
-        signal: controller.signal,
-        cancel: (reason) => controller.abort(reason),
-      });
+      })).launched;
+      if (turn === undefined) {
+        throw new Error2(ErrorCodes.SESSION_INIT_FAILED, 'The main agent init turn did not start.');
+      }
+      const cancel = (): void => {
+        turn.cancel(controller.signal.reason);
+      };
+      controller.signal.addEventListener('abort', cancel, { once: true });
+      const result = await (async () => {
+        try {
+          return await turn.result;
+        } finally {
+          controller.signal.removeEventListener('abort', cancel);
+        }
+      })();
+      if (result.type === 'failed') throw result.error;
+      if (result.type === 'cancelled') throw result.reason;
 
       const { content: agentsMd, paths: agentsMdPaths } = await loadAgentsMdDetailed(
         { fs: this.fs, homeDir: this.env.homeDir },

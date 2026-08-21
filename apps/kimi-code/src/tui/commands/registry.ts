@@ -162,22 +162,6 @@ export const BUILTIN_SLASH_COMMANDS = [
     availability: 'always',
   },
   {
-    name: 'plan',
-    aliases: [],
-    description: 'Toggle plan mode',
-    priority: 100,
-    availability: (args) => (args.trim().toLowerCase() === 'clear' ? 'idle-only' : 'always'),
-  },
-  {
-    name: 'swarm',
-    aliases: [],
-    description: 'Toggle swarm mode or run one task in swarm mode',
-    priority: 100,
-    argumentHint: '[on|off] | <task>',
-    completeArgs: swarmArgumentCompletions,
-    availability: 'idle-only',
-  },
-  {
     name: 'model',
     aliases: [],
     description: 'Switch LLM model',
@@ -204,13 +188,6 @@ export const BUILTIN_SLASH_COMMANDS = [
     aliases: ['providers'],
     description: 'Manage AI providers (add / delete / refresh)',
     priority: 95,
-    availability: 'always',
-  },
-  {
-    name: 'btw',
-    aliases: [],
-    description: 'Ask a forked side agent a question',
-    priority: 90,
     availability: 'always',
   },
   {

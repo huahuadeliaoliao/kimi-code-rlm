@@ -1207,7 +1207,7 @@ describe('server-v2 /api/v1 prompts', () => {
     const submitted = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'hello' }],
       model: 'stub',
-      disabled_tools: ['Bash'],
+      disabled_tools: ['FetchURL'],
     });
     expect(submitted.body.code).toBe(0);
 
@@ -1215,23 +1215,23 @@ describe('server-v2 /api/v1 prompts', () => {
     if (session === undefined) throw new Error(`session ${id} not found`);
     const toolPolicy = session.accessor.get(IAgentLifecycleService).get('main')?.accessor
       .get(IAgentToolPolicyService);
-    expect(toolPolicy?.isToolActive('Bash')).toBe(false);
-    expect(toolPolicy?.isToolActive('Read')).toBe(true);
+    expect(toolPolicy?.isToolActive('FetchURL')).toBe(false);
+    expect(toolPolicy?.isToolActive('RlmKernel')).toBe(true);
 
     const replaced = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'again' }],
-      disabled_tools: ['Write'],
+      disabled_tools: ['Skill'],
     });
     expect(replaced.body.code).toBe(0);
-    expect(toolPolicy?.isToolActive('Bash')).toBe(true);
-    expect(toolPolicy?.isToolActive('Write')).toBe(false);
+    expect(toolPolicy?.isToolActive('FetchURL')).toBe(true);
+    expect(toolPolicy?.isToolActive('Skill')).toBe(false);
 
     const cleared = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'once more' }],
       disabled_tools: [],
     });
     expect(cleared.body.code).toBe(0);
-    expect(toolPolicy?.isToolActive('Write')).toBe(true);
+    expect(toolPolicy?.isToolActive('Skill')).toBe(true);
   });
 
   it('shares disabled_tools with agents created after the request', async () => {
@@ -1294,6 +1294,6 @@ describe('server-v2 /api/v1 prompts', () => {
     const toolPolicy = session.accessor.get(IAgentLifecycleService).get('main')?.accessor
       .get(IAgentToolPolicyService);
     expect(toolPolicy?.isToolActive('Bash')).toBe(false);
-    expect(toolPolicy?.isToolActive('Read')).toBe(true);
+    expect(toolPolicy?.isToolActive('RlmKernel')).toBe(true);
   });
 });

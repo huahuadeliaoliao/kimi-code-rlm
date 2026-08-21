@@ -8,10 +8,9 @@ import { escapeXml } from '#/_base/utils/xml-escape';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IAgentStateService } from '#/agent/state/agentState';
+import { IBashTool } from '#/agent/tools/os/bash/bash';
 import type { ToolUpdate } from '#/tool/toolContract';
-import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { Event2 } from '#/app/event/event2';
-import { Error2, ErrorCodes } from '#/errors';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 
 import {
@@ -67,7 +66,7 @@ export class AgentShellCommandService implements IAgentShellCommandService {
   private readonly shellCommandControllers = new Map<string, AbortController>();
 
   constructor(
-    @IAgentToolRegistryService private readonly toolRegistry: IAgentToolRegistryService,
+    @IBashTool private readonly bash: IBashTool,
     @IAgentContextMemoryService private readonly context: IAgentContextMemoryService,
     @IAgentPromptService private readonly promptService: IAgentPromptService,
     @IEventDispatcher private readonly dispatcher: IEventDispatcher,
@@ -91,8 +90,7 @@ export class AgentShellCommandService implements IAgentShellCommandService {
     let stdout = '';
     let stderr = '';
     try {
-      const bash = this.ensureBashTool();
-      const execution = await bash.resolveExecution({
+      const execution = await this.bash.resolveExecution({
         command: input.command,
         timeout: SHELL_FOREGROUND_TIMEOUT_S,
       });
@@ -191,14 +189,6 @@ export class AgentShellCommandService implements IAgentShellCommandService {
 
   cancel(commandId: string): void {
     this.shellCommandControllers.get(commandId)?.abort(userCancellationReason());
-  }
-
-  private ensureBashTool() {
-    const bash = this.toolRegistry.resolve('Bash');
-    if (bash === undefined) {
-      throw new Error2(ErrorCodes.INTERNAL, 'Bash tool is not registered.');
-    }
-    return bash;
   }
 
   private appendShellInput(command: string): void {

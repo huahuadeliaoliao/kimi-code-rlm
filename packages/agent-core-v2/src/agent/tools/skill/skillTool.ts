@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import type { SkillActivationOrigin } from '#/agent/contextMemory/types';
+import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentSkillService } from '#/agent/skill/skill';
 import { renderModelToolSkillPrompt } from '#/agent/skill/prompt';
 import type { ExecutableToolResult, ToolDeliveryMessage, ToolExecution } from '#/tool/toolContract';
@@ -35,6 +36,7 @@ export class SkillTool implements ISkillTool {
     @ISessionSkillCatalog private readonly catalog: ISessionSkillCatalog,
     @IAgentSkillService private readonly skill: IAgentSkillService,
     @ISessionContext private readonly sessionContext: ISessionContext,
+    @IAgentProfileService private readonly profile: IAgentProfileService,
   ) {}
 
   resolveExecution(args: SkillToolInput): ToolExecution {
@@ -48,7 +50,7 @@ export class SkillTool implements ISkillTool {
   }
 
   withInitialQueryDepth(initialQueryDepth: number): SkillTool {
-    const clone = new SkillTool(this.catalog, this.skill, this.sessionContext);
+    const clone = new SkillTool(this.catalog, this.skill, this.sessionContext, this.profile);
     clone.queryDepth = initialQueryDepth;
     return clone;
   }
@@ -60,6 +62,7 @@ export class SkillTool implements ISkillTool {
       args,
       this.queryDepth,
       this.sessionContext.sessionId,
+      this.profile.getActiveToolNames()?.includes('RlmKernel') === true,
     );
   }
 }
@@ -72,6 +75,7 @@ export async function executeModelSkill(
   args: SkillToolInput,
   queryDepth: number,
   sessionId: string,
+  rlmDialect = false,
 ): Promise<ExecutableToolResult> {
   const currentDepth = queryDepth;
   if (currentDepth >= MAX_SKILL_QUERY_DEPTH) {
@@ -106,7 +110,16 @@ export async function executeModelSkill(
     skillPath: skill.path,
     skillSource: skill.source,
   };
-  const skillContent = catalog.catalog.renderSkillPrompt(skill, skillArgs, { sessionId });
+  const renderedSkillContent = catalog.catalog.renderSkillPrompt(skill, skillArgs, { sessionId });
+  const skillContent = rlmDialect
+    ? [
+        '<rlm-tool-dialect>',
+        'This skill may use names from the stock tool dialect. Translate general file, search, edit, and command operations into RlmKernel Python, and use only tool schemas that are currently present.',
+        '</rlm-tool-dialect>',
+        '',
+        renderedSkillContent,
+      ].join('\n')
+    : renderedSkillContent;
   const message: ToolDeliveryMessage = {
     role: 'user',
     content: [

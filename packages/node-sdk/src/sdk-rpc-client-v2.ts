@@ -127,8 +127,7 @@
  *   `ISessionQuestionService.answer|dismiss` / the kernel's `respond`.
  * - `exportSession` → `ISessionExportService` (app scope, the v2 port of v1's
  *   export) through {@link engineAccessor}; `listSkills` → the session
- *   scope's `ISessionSkillCatalog`; `startBtw` → the session scope's
- *   `ISessionBtwService`; `setSwarmMode` / `swarm` → the agent scope's
+ *   scope's `ISessionSkillCatalog`; `setSwarmMode` / `swarm` → the agent scope's
  *   `IAgentSwarmService` (the v2 port of v1's `SwarmMode`), with `swarm()`
  *   recomposed over the `setSwarmMode` + `prompt` overrides.
  *   `createSessionWithKaos` / `resumeSessionWithKaos` deliberately keep the
@@ -174,7 +173,6 @@ import {
   ensureKimiHome,
   ensureMainAgent,
   IAgentActivityView,
-  IAgentContextInjectorService,
   IAgentContextMemoryService,
   IAgentConversationUndoService,
   IAgentFullCompactionService,
@@ -199,7 +197,6 @@ import {
   IHostFileSystem,
   IModelService,
   IProviderService,
-  ISessionBtwService,
   ISessionContext,
   ISessionCronService,
   ISessionExportService,
@@ -1702,22 +1699,19 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
     return agent.setPermission(input.mode);
   }
 
-  /** v1 maps the toggle onto two RPCs (`enterPlan` / `cancelPlan`); so does v2. */
   override async setPlanMode(input: SetSessionPlanModeRpcInput): Promise<void> {
-    const agent = await this.agentFacade(input.sessionId);
-    if (!input.enabled) return agent.cancelPlan();
-    return agent.enterPlan();
+    if (!input.enabled) return;
+    throw new KimiError(
+      ErrorCodes.SESSION_PLAN_MODE_INVALID,
+      'Plan mode is disabled in this local RLM build.',
+    );
   }
 
-  override async getPlan(input: SessionIdRpcInput): Promise<SessionPlan> {
-    const agent = await this.agentFacade(input.sessionId);
-    return agent.getPlan();
+  override async getPlan(_input: SessionIdRpcInput): Promise<SessionPlan> {
+    return null;
   }
 
-  override async clearPlan(input: SessionIdRpcInput): Promise<void> {
-    const agent = await this.agentFacade(input.sessionId);
-    return agent.clearPlan();
-  }
+  override async clearPlan(_input: SessionIdRpcInput): Promise<void> {}
 
   /** Facade (`agentCommandService.list`) — the v2-only contributed-command seam. */
   override async listCommands(input: SessionIdRpcInput): Promise<readonly AgentCommandInfo[]> {
@@ -1772,9 +1766,8 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
   override async getStatus(input: SessionIdRpcInput): Promise<SessionStatus> {
     const agent = await this.agentScope(input.sessionId);
     const facade = this.klient.session(input.sessionId).agent(this.interactiveAgentId);
-    const [context, plan, usage] = await Promise.all([
+    const [context, usage] = await Promise.all([
       facade.getContext(),
-      facade.getPlan(),
       facade.getUsage(),
     ]);
     const profile = agent.accessor.get(IAgentProfileService).data();
@@ -1790,8 +1783,8 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
       model: profile.modelAlias,
       thinkingEffort: profile.thinkingLevel,
       permission: agent.accessor.get(IAgentPermissionModeService).mode,
-      planMode: plan !== null,
-      swarmMode: agent.accessor.get(IAgentSwarmService).isActive,
+      planMode: false,
+      swarmMode: false,
       contextTokens,
       maxContextTokens,
       contextUsage,
@@ -2057,22 +2050,11 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
       : [{ code: 'agents-md-oversized', message: warning, severity: 'warning' as const }];
   }
 
-  /**
-   * Through the session scope (`ISessionBtwService`) — no klient facade
-   * exists. The v2 service is the port of v1's btw fork: same inherited
-   * profile/context, same byte-identical side-question reminder, same
-   * tool-call deny, and the same return (the forked child's agent id). The
-   * main agent is materialized first — both engines fork it as the source,
-   * and v2's `fork('main')` throws on a missing source. Gaps, pinned in the
-   * migration tracker: v2 always forks MAIN where v1 forks the agent
-   * `interactiveAgentId` addresses (SDK hosts only ever btw the main agent),
-   * and the v2 child is a regular persisted agent where v1's is memory-only
-   * (`InMemoryAgentRecordPersistence`, no metadata).
-   */
-  override async startBtw(input: SessionIdRpcInput): Promise<string> {
-    const session = this.requireLiveSession(input.sessionId);
-    await this.materializeMainAgent(session);
-    return session.accessor.get(ISessionBtwService).start();
+  override async startBtw(_input: SessionIdRpcInput): Promise<string> {
+    throw new KimiError(
+      ErrorCodes.REQUEST_INVALID,
+      'Side questions are disabled in this local single-agent RLM build.',
+    );
   }
 
   /**
@@ -2085,20 +2067,18 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
    * replaced wholesale; `swarm()` below recomposes it over this override.
    */
   override async setSwarmMode(input: SetSessionSwarmModeRpcInput): Promise<void> {
-    const agent = await this.agentScope(input.sessionId);
-    const swarm = agent.accessor.get(IAgentSwarmService);
-    if (input.enabled) {
-      swarm.enter(input.trigger);
-    } else {
-      swarm.exit();
-    }
-    await agent.accessor.get(IAgentContextInjectorService).reconcileWhenIdle('swarm_mode');
+    if (!input.enabled) return;
+    throw new KimiError(
+      ErrorCodes.REQUEST_INVALID,
+      'Swarm mode is disabled in this local single-agent RLM build.',
+    );
   }
 
-  /** v1's `swarm()` composition: enter with the one-shot `task` trigger, then prompt. */
-  override async swarm(input: SessionPromptRpcInput): Promise<void> {
-    await this.setSwarmMode({ sessionId: input.sessionId, enabled: true, trigger: 'task' });
-    return this.prompt(input);
+  override async swarm(_input: SessionPromptRpcInput): Promise<void> {
+    throw new KimiError(
+      ErrorCodes.REQUEST_INVALID,
+      'Swarm mode is disabled in this local single-agent RLM build.',
+    );
   }
 
   // -----------------------------------------------------------------------

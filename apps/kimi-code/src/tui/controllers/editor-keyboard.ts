@@ -17,7 +17,6 @@ import {
   DOUBLE_ESC_WINDOW_MS,
   EXIT_CONFIRM_WINDOW_MS,
   LLM_NOT_SET_MESSAGE,
-  NO_ACTIVE_SESSION_MESSAGE,
 } from '../constant/kimi-tui';
 import { MEDIA_STAGING_TTL_SECONDS } from '../constant/media';
 import { formatErrorMessage } from '../utils/event-payload';
@@ -253,28 +252,6 @@ export class EditorKeyboardController {
         return;
       }
       this.armPendingUndoEsc();
-    };
-
-    editor.onShiftTab = () => {
-      const togglePlan = (): void => {
-        const next = !host.state.appState.planMode;
-        host.track('shortcut_plan_toggle', { enabled: next });
-        host.track('shortcut_mode_switch', { to_mode: next ? 'plan' : 'agent' });
-        host.handlePlanToggle(next);
-      };
-      if (host.session === undefined) {
-        if (!host.engineV2) {
-          host.showError(NO_ACTIVE_SESSION_MESSAGE);
-          return;
-        }
-        // v2 session-less: lazy-create the session, then toggle — the same
-        // path /plan takes.
-        void host.ensureSession().then((session) => {
-          if (session !== undefined) togglePlan();
-        });
-        return;
-      }
-      togglePlan();
     };
 
     editor.onInputModeChange = (mode) => {

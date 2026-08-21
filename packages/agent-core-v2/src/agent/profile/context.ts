@@ -22,6 +22,7 @@ export interface PreparedSystemPromptContext extends SystemPromptContext {
   readonly agentsMd?: string;
   readonly agentsMdPaths?: readonly string[];
   readonly additionalDirsInfo?: string;
+  readonly additionalDirs?: readonly string[];
   readonly agentsMdWarning?: string;
 }
 
@@ -49,6 +50,7 @@ export async function prepareSystemPromptContext(
     agentsMd: agentsMdResult.content,
     agentsMdPaths: agentsMdResult.paths,
     additionalDirsInfo,
+    additionalDirs,
     agentsMdWarning: agentsMdResult.warning,
   };
 }

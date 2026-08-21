@@ -20,6 +20,7 @@ interface SwarmModeInjectionDisclosure {
 
 export interface SwarmInjectionOptions {
   readonly getTrigger: () => SwarmModeTrigger | null;
+  readonly isEnabled: () => boolean;
 }
 
 export class SwarmInjection extends Disposable {
@@ -40,6 +41,7 @@ export class SwarmInjection extends Disposable {
   private reminder(
     ctx: ContextInjectionContext<SwarmModeInjectionDisclosure>,
   ): ContextInjectionResult<SwarmModeInjectionDisclosure> | undefined {
+    if (!this.options.isEnabled()) return undefined;
     const trigger = this.options.getTrigger();
     const active = trigger !== null && trigger !== 'tool';
     const rendered = this.renderedState(ctx);

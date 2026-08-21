@@ -1,0 +1,1 @@
+Produce the continuity note requested by the final user message for the next continuation of this task. Do not continue the task, answer earlier requests, call tools, or add commentary outside the note.

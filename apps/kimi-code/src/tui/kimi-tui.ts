@@ -1150,8 +1150,8 @@ export class KimiTUI {
   // Input Dispatch
   // =========================================================================
 
-  handlePlanToggle(next: boolean): void {
-    void slashCommands.handlePlanCommand(this, next ? 'on' : 'off');
+  handlePlanToggle(_next: boolean): void {
+    this.showError('Plan mode is disabled in this local RLM build.');
   }
 
   handleInputModeChange(mode: 'prompt' | 'bash'): void {
@@ -2143,13 +2143,8 @@ export class KimiTUI {
       // elevated mode must not be passed to the first lazy-created session.
       patch.permissionMode = config.defaultPermissionMode ?? 'manual';
     }
-    // Track the config default itself (vs an explicit CLI --plan) so the lazy
-    // create path can tell which one would activate plan mode; a removed
-    // default also clears the hydrated footer value.
-    patch.configDefaultPlanMode = config.defaultPlanMode === true;
-    if (!startup.plan) {
-      patch.planMode = config.defaultPlanMode === true;
-    }
+    patch.configDefaultPlanMode = false;
+    patch.planMode = false;
     const effort = thinkingEffortFromConfig(config.thinking);
     if (effort !== undefined) {
       patch.thinkingEffort = effort;
@@ -2178,16 +2173,6 @@ export class KimiTUI {
     if (model.length === 0) {
       throw new Error(LLM_NOT_SET_MESSAGE);
     }
-    // With an active session, carry the live plan state. Session-less (lazy
-    // creation / `/new` before the first session) on v2, pass only the
-    // explicit CLI --plan intent — and only when the engine is not already
-    // applying `defaultPlanMode` at create time (sessionLifecycleService),
-    // since re-entering an active plan mode throws. On v1 (which never
-    // pre-fills plan mode from config), keep the historical appState value.
-    const explicitPlanMode =
-      this.session !== undefined || !this.engineV2
-        ? this.state.appState.planMode
-        : this.options.startup.plan && this.state.appState.configDefaultPlanMode !== true;
     const options: MutableCreateSessionOptions = {
       workDir: this.state.appState.workDir,
       model,
@@ -2201,7 +2186,6 @@ export class KimiTUI {
           ? this.state.appState.lazySessionThinking
           : this.state.appState.thinkingEffort,
       permission: this.state.appState.permissionMode,
-      planMode: explicitPlanMode ? true : undefined,
     };
     if (this.state.appState.additionalDirs.length > 0) {
       options.additionalDirs = [...this.state.appState.additionalDirs];

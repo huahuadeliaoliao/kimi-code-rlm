@@ -26,7 +26,6 @@ const SLASH_COMMANDS: SlashCommandInfo[] = [
     aliases: ["afk"],
     description: "Toggle Auto mode (fully autonomous; the agent will not ask questions)",
   },
-  { name: "plan", aliases: [], description: "Toggle plan mode. Usage: /plan [on|off|view|clear]" },
   {
     name: "add-dir",
     aliases: [],

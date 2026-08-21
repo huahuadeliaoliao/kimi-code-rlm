@@ -5,7 +5,6 @@ import {
   resolveSlashCommandAvailability,
   addDirArgumentCompletions,
   sortSlashCommands,
-  swarmArgumentCompletions,
   type KimiSlashCommand,
 } from '#/tui/commands/index';
 import { describe, expect, it } from 'vitest';
@@ -35,44 +34,16 @@ describe('built-in slash command registry', () => {
     expect(findBuiltInSlashCommand('q')?.name).toBe('exit');
     expect(findBuiltInSlashCommand('clear')?.name).toBe('new');
     expect(findBuiltInSlashCommand('bug')?.name).toBe('feedback');
-    expect(findBuiltInSlashCommand('btw')?.name).toBe('btw');
+    expect(findBuiltInSlashCommand('btw')).toBeUndefined();
     expect(findBuiltInSlashCommand('mcp')?.name).toBe('mcp');
     expect(findBuiltInSlashCommand('status')?.name).toBe('status');
     expect(findBuiltInSlashCommand('usage')?.aliases).not.toContain('status');
     expect(findBuiltInSlashCommand('unknown')).toBeUndefined();
   });
 
-  it('marks plan clear as idle-only while normal plan toggles are always available', () => {
-    const plan = findBuiltInSlashCommand('plan');
-    expect(plan).toBeDefined();
-    expect(resolveSlashCommandAvailability(plan!, '')).toBe('always');
-    expect(resolveSlashCommandAvailability(plan!, 'on')).toBe('always');
-    expect(resolveSlashCommandAvailability(plan!, 'clear')).toBe('idle-only');
-  });
-
-  it('keeps swarm mode changes and swarm tasks idle-only', () => {
-    const swarm = findBuiltInSlashCommand('swarm');
-    expect(swarm).toBeDefined();
-    expect((swarm as KimiSlashCommand).experimentalFlag).toBeUndefined();
-    expect(resolveSlashCommandAvailability(swarm!, 'on')).toBe('idle-only');
-    expect(resolveSlashCommandAvailability(swarm!, 'off')).toBe('idle-only');
-    expect(resolveSlashCommandAvailability(swarm!, 'Ship feature X')).toBe('idle-only');
-  });
-
-  it('offers swarm subcommand argument completions', () => {
-    const values = (prefix: string): string[] | null => {
-      const items = swarmArgumentCompletions(prefix);
-      return items === null ? null : items.map((item) => item.value);
-    };
-
-    expect(values('')).toEqual(['on', 'off']);
-    expect(values('O')).toEqual(['on', 'off']);
-    expect(swarmArgumentCompletions('of')).toEqual([
-      { value: 'off', label: 'off', description: 'Turn swarm mode off' },
-    ]);
-    expect(values('on')).toBeNull();
-    expect(values('off')).toBeNull();
-    expect(values('Ship feature X')).toBeNull();
+  it('does not register plan or swarm commands', () => {
+    expect(findBuiltInSlashCommand('plan')).toBeUndefined();
+    expect(findBuiltInSlashCommand('swarm')).toBeUndefined();
   });
 
   it('offers add-dir list and directory argument completions', () => {
@@ -151,7 +122,6 @@ describe('built-in slash command registry', () => {
       expect.arrayContaining([
         'add-dir',
         'compact',
-        'btw',
         'editor',
         'exit',
         'export-debug-zip',
@@ -164,7 +134,6 @@ describe('built-in slash command registry', () => {
         'model',
         'new',
         'permission',
-        'plan',
         'reload',
         'reload-tui',
         'secondary-model',

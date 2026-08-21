@@ -139,7 +139,7 @@ describe('AgentProfileService.bind', () => {
     expect(svc.isRunnable()).toBe(true);
   });
 
-  it('renders the prompt and disclosure from the injected host clock', async () => {
+  it('keeps the default RLM prompt independent of the injected host clock', async () => {
     const hostClock: IHostClock = {
       _serviceBrand: undefined,
       now: () => new Date('2026-07-29T04:00:00.000Z'),
@@ -150,12 +150,9 @@ describe('AgentProfileService.bind', () => {
 
     await svc.bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: MOCK_MODEL });
 
-    expect(svc.getSystemPrompt()).toContain('2026-07-29T04:00:00.000Z');
+    expect(svc.getSystemPrompt()).not.toContain('2026-07-29T04:00:00.000Z');
     expect(svc.data().environmentDisclosure).toMatchObject({
-      date: {
-        disclosed: true,
-        value: { localDate: '2026-07-29', timeZone: 'Asia/Shanghai' },
-      },
+      date: { disclosed: false },
     });
   });
 
@@ -199,9 +196,33 @@ describe('AgentProfileService.bind', () => {
       modelAlias: MOCK_MODEL,
       thinkingEffort: 'on',
       systemPrompt: expect.stringContaining('Kimi Code CLI'),
-      activeToolNames: expect.arrayContaining(['Read', 'Write', 'Bash']),
+      activeToolNames: [
+        'RlmKernel',
+        'ReadMediaFile',
+        'Skill',
+        'FetchURL',
+        'CreateGoal',
+        'GetGoal',
+        'UpdateGoal',
+        'mcp__*',
+      ],
       disallowedTools: [],
     });
+    const systemPrompt = (records[0] as unknown as { readonly systemPrompt: string }).systemPrompt;
+    expect(systemPrompt.length).toBeLessThan(50_000);
+    expect(systemPrompt).toContain('Use RlmKernel for general file inspection');
+    for (const forbidden of [
+      '`Read`',
+      '`Write`',
+      '`Edit`',
+      '`Glob`',
+      '`Grep`',
+      'rlm.run',
+      'Plan mode',
+      'Swarm mode',
+    ]) {
+      expect(systemPrompt).not.toContain(forbidden);
+    }
   });
 
   it('restores the subagent allowlist from the binding record without catalog resolution', async () => {
@@ -546,28 +567,29 @@ describe('AgentToolPolicyService global [tools] config', () => {
   }
 
   it('treats a non-empty enabled list as a global allowlist', async () => {
-    const svc = await bindWithToolsConfig({ enabled: ['Read'] });
-    expect(svc.isToolActive('Read')).toBe(true);
-    expect(svc.isToolActive('Bash')).toBe(false);
+    const svc = await bindWithToolsConfig({ enabled: ['RlmKernel'] });
+    expect(svc.isToolActive('RlmKernel')).toBe(true);
+    expect(svc.isToolActive('TaskList')).toBe(false);
   });
 
-  it('treats an empty enabled list as unconstrained', async () => {
+  it('treats an empty enabled list as unconstrained within the profile', async () => {
     const svc = await bindWithToolsConfig({ enabled: [] });
-    expect(svc.isToolActive('Read')).toBe(true);
-    expect(svc.isToolActive('Bash')).toBe(true);
+    expect(svc.isToolActive('RlmKernel')).toBe(true);
+    expect(svc.isToolActive('FetchURL')).toBe(true);
+    expect(svc.isToolActive('TodoList')).toBe(false);
   });
 
   it('applies disabled as a global denylist', async () => {
-    const svc = await bindWithToolsConfig({ disabled: ['Bash'] });
-    expect(svc.isToolActive('Bash')).toBe(false);
-    expect(svc.isToolActive('Read')).toBe(true);
+    const svc = await bindWithToolsConfig({ disabled: ['FetchURL'] });
+    expect(svc.isToolActive('FetchURL')).toBe(false);
+    expect(svc.isToolActive('RlmKernel')).toBe(true);
   });
 
   it('matches globally disabled mcp tools by glob', async () => {
     const svc = await bindWithToolsConfig({ disabled: ['mcp__github__*'] });
     expect(svc.isToolActive('mcp__github__create_pr', 'mcp')).toBe(false);
     expect(svc.isToolActive('mcp__other__ping', 'mcp')).toBe(true);
-    expect(svc.isToolActive('Read')).toBe(true);
+    expect(svc.isToolActive('RlmKernel')).toBe(true);
   });
 
   it('intersects the global config with the profile policy instead of overriding it', async () => {
@@ -616,12 +638,12 @@ describe('AgentToolPolicyService.setSessionDisabledTools', () => {
   it('replaces the client-managed denylist on every call', async () => {
     const svc = await bind(DEFAULT_AGENT_PROFILE_NAME);
 
-    await svc.setSessionDisabledTools(['Bash']);
-    expect(svc.isToolActive('Bash')).toBe(false);
-    expect(svc.isToolActive('Read')).toBe(true);
+    await svc.setSessionDisabledTools(['FetchURL']);
+    expect(svc.isToolActive('FetchURL')).toBe(false);
+    expect(svc.isToolActive('RlmKernel')).toBe(true);
 
     await svc.setSessionDisabledTools(['Edit']);
-    expect(svc.isToolActive('Bash')).toBe(true);
+    expect(svc.isToolActive('FetchURL')).toBe(true);
     expect(svc.isToolActive('Edit')).toBe(false);
   });
 
@@ -703,12 +725,12 @@ describe('AgentToolPolicyService.setSessionDisabledTools', () => {
     const { profile, toolPolicy } = profileServices(ctx);
     await profile.bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: MOCK_MODEL });
 
-    await expect(toolPolicy.setSessionDisabledTools(['Bash'])).rejects.toThrow('disk full');
-    expect(toolPolicy.isToolActive('Bash')).toBe(true);
-    await toolPolicy.setSessionDisabledTools(['Bash']);
+    await expect(toolPolicy.setSessionDisabledTools(['FetchURL'])).rejects.toThrow('disk full');
+    expect(toolPolicy.isToolActive('FetchURL')).toBe(true);
+    await toolPolicy.setSessionDisabledTools(['FetchURL']);
 
     expect(attempts).toBe(2);
-    expect(toolPolicy.isToolActive('Bash')).toBe(false);
+    expect(toolPolicy.isToolActive('FetchURL')).toBe(false);
   });
 
   it('removes the skill listing when the session disables Skill', async () => {

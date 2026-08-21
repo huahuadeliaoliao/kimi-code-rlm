@@ -52,11 +52,7 @@ continue:
   here is one less thing the next turn must rediscover. Include any required
   format for the final answer.
 
-Your TODO list is re-attached automatically below this note from its live
-source, so do not transcribe it — copying it wastes space and can contradict the
-live version. What that list cannot hold is the reasoning between tasks — why one
-was reordered or dropped, or a decision on one that constrains another — so
-record that instead.
+${todo_handoff_guidance}
 
 Be honest about uncertainty. If an earlier step claimed something was done but
 was never verified (tests "passing", a fix "working", a file "created"), say so

@@ -113,7 +113,7 @@ describe('Session.prompt input normalization', () => {
     expect(prompt).not.toHaveBeenCalled();
   });
 
-  it('starts btw and returns the forked agent id', async () => {
+  it('rejects btw without calling RPC', async () => {
     const startBtw = vi.fn(async () => 'agent-btw');
     const session = new Session({
       id: 'ses_btw_start',
@@ -121,10 +121,10 @@ describe('Session.prompt input normalization', () => {
       rpc: { startBtw } as unknown as SDKRpcClientBase,
     });
 
-    await expect(session.startBtw()).resolves.toBe('agent-btw');
-    expect(startBtw).toHaveBeenCalledWith({
-      sessionId: 'ses_btw_start',
-    });
+    await expect(session.startBtw()).rejects.toThrow(
+      'Side questions are disabled in this local single-agent RLM build.',
+    );
+    expect(startBtw).not.toHaveBeenCalled();
   });
 
   it('scopes interactive agent id across awaited session operations', async () => {
@@ -138,7 +138,9 @@ describe('Session.prompt input normalization', () => {
     await rpc.withInteractiveAgent('agent-btw', async () => {
       await Promise.resolve();
       await session.prompt('side question');
-      await session.setPlanMode(true);
+      await expect(session.setPlanMode(true)).rejects.toMatchObject({
+        code: 'session.plan_mode_invalid',
+      });
       await session.getPlan();
       await session.clearPlan();
       await session.setPlanMode(false);
@@ -153,10 +155,10 @@ describe('Session.prompt input normalization', () => {
         input: [{ type: 'text', text: 'side question' }],
       },
     ]);
-    expect(rpc.enterPlanCalls).toEqual([{ sessionId: 'ses_scoped_agent', agentId: 'agent-btw' }]);
+    expect(rpc.enterPlanCalls).toEqual([]);
     expect(rpc.getPlanCalls).toEqual([{ sessionId: 'ses_scoped_agent', agentId: 'agent-btw' }]);
     expect(rpc.clearPlanCalls).toEqual([{ sessionId: 'ses_scoped_agent', agentId: 'agent-btw' }]);
-    expect(rpc.cancelPlanCalls).toEqual([{ sessionId: 'ses_scoped_agent', agentId: 'agent-btw' }]);
+    expect(rpc.cancelPlanCalls).toEqual([]);
   });
 
   it('isolates overlapping interactive agent scopes while RPC resolution is pending', async () => {

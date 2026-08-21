@@ -6,6 +6,7 @@ import { DisposableStore } from '#/_base/di/lifecycle';
 import { createServices, type TestInstantiationService } from '#/_base/di/test';
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
+import type { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentSkillService } from '#/agent/skill/skill';
 import { IAgentScopeContext, makeAgentScopeContext } from '#/agent/scopeContext/scopeContext';
@@ -239,11 +240,12 @@ describe('SkillTool', () => {
     };
   }
 
-  function makeTool(ix: TestInstantiationService, depth?: number): SkillTool {
+  function makeTool(ix: TestInstantiationService, depth?: number, rlm = false): SkillTool {
     const tool = new SkillTool(
       ix.get(ISessionSkillCatalog),
       stubSkillService(),
       stubSessionContext(),
+      { getActiveToolNames: () => rlm ? ['RlmKernel'] : undefined } as IAgentProfileService,
     );
     return depth === undefined ? tool : tool.withInitialQueryDepth(depth);
   }
@@ -333,6 +335,24 @@ describe('SkillTool', () => {
       type: 'text',
       text: expect.stringContaining('ARGUMENTS: src/app.ts'),
     });
+  });
+
+  it('adds the RLM tool dialect contract to loaded skills', async () => {
+    const result = await executeTool(
+      makeTool(ix, undefined, true),
+      toolContext({ skill: 'commit' }),
+    );
+    expect(result.delivery?.message.content[0]).toMatchObject({
+      type: 'text',
+      text: expect.stringContaining('<rlm-tool-dialect>'),
+    });
+    expect(result.delivery?.message.content[0]).toMatchObject({
+      type: 'text',
+      text: expect.stringContaining(
+        'Translate general file, search, edit, and command operations into RlmKernel Python',
+      ),
+    });
+    expect(JSON.stringify(result.delivery?.message)).not.toMatch(/plan|swarm/i);
   });
 
   it('honors initialQueryDepth as an alias for queryDepth', async () => {

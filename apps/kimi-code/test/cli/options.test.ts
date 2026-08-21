@@ -176,8 +176,10 @@ describe('CLI options parsing', () => {
   });
 
   describe('--plan', () => {
-    it('sets plan mode flag', () => {
-      expect(parse(['--plan']).plan).toBe(true);
+    it('keeps the legacy flag parseable but rejects it in the local RLM build', () => {
+      const options = parse(['--plan']);
+      expect(options.plan).toBe(true);
+      expect(() => validateOptions(options)).toThrow('Plan mode is disabled');
     });
   });
 
@@ -210,18 +212,14 @@ describe('CLI options parsing', () => {
       expect(validateOptions(opts).uiMode).toBe('shell');
     });
 
-    it('allows --plan with --continue', () => {
+    it('rejects --plan with --continue', () => {
       const opts = parse(['--plan', '--continue']);
-      expect(opts.plan).toBe(true);
-      expect(opts.continue).toBe(true);
-      expect(validateOptions(opts).uiMode).toBe('shell');
+      expect(() => validateOptions(opts)).toThrow('Plan mode is disabled');
     });
 
-    it('allows --plan with an explicit session id', () => {
+    it('rejects --plan with an explicit session id', () => {
       const opts = parse(['--plan', '--session', 'ses_123']);
-      expect(opts.plan).toBe(true);
-      expect(opts.session).toBe('ses_123');
-      expect(validateOptions(opts).uiMode).toBe('shell');
+      expect(() => validateOptions(opts)).toThrow('Plan mode is disabled');
     });
   });
 
@@ -289,7 +287,7 @@ describe('CLI options parsing', () => {
     it('rejects prompt mode with --plan', () => {
       const opts = parse(['-p', 'run this', '--plan']);
       expect(() => validateOptions(opts)).toThrow(OptionConflictError);
-      expect(() => validateOptions(opts)).toThrow('Cannot combine --prompt with --plan.');
+      expect(() => validateOptions(opts)).toThrow('Plan mode is disabled');
     });
 
     it('parses --output-format=stream-json in prompt mode', () => {

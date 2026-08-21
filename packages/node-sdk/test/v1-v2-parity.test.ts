@@ -444,16 +444,11 @@ function projectResumedAgents(
  *   accruing clock).
  * - `plan`: the KNOWN_DIFFS.getPlan rule (random hero-slug id, scrubbed out
  *   of the path after the home scrub).
- * - `tools`: compared as sorted {name, active, source} triples. Tool
- *   DESCRIPTIONS are engine-owned constants that legitimately drift between
- *   the engines (the subagent/cron docs embed engine-specific facts), and
- *   v1 additionally registers the `select_tools` meta tool v2 has no
- *   counterpart for — both are engine design, not resume data. v2's default
- *   profile also carries `TowerInit` (the tower-mode entry point) and
- *   `WaitFor` (the background-task wait primitive); both are v2-only, so the
- *   tools are projected out of both rosters. A model-less
- *   agent's roster is not compared at all (v1 initializes builtin tools
- *   only on a profiled agent; v2 exposes them unbound).
+ * - `tools`: engine-owned profile data, not resume data. The local v2 build
+ *   replaces the default data-plane roster with RlmKernel while v1 keeps its
+ *   standard tools, so both rosters are projected out. A model-less agent's
+ *   roster is likewise not compared (v1 initializes builtin tools only on a
+ *   profiled agent; v2 exposes them unbound).
  */
 function projectResumedAgent(agent: ResumedAgentState, home: HomePair): unknown {
   const projected = scrubHomePrefixes(agent, home) as Record<string, unknown>;
@@ -462,18 +457,8 @@ function projectResumedAgent(agent: ResumedAgentState, home: HomePair): unknown 
   delete config['systemPrompt'];
   delete config['subagentNames'];
   const modelLess = config['modelAlias'] === undefined;
-  if (modelLess) {
-    delete config['profileName'];
-    projected['tools'] = [];
-  } else {
-    const tools = projected['tools'] as readonly Record<string, unknown>[];
-    projected['tools'] = tools
-      .filter((tool) => tool['name'] !== 'select_tools')
-      .filter((tool) => tool['name'] !== 'TowerInit')
-      .filter((tool) => tool['name'] !== 'WaitFor')
-      .map((tool) => ({ name: tool['name'], active: tool['active'], source: tool['source'] }))
-      .toSorted((a, b) => String(a.name).localeCompare(String(b.name)));
-  }
+  if (modelLess) delete config['profileName'];
+  delete projected['tools'];
   const context = projected['context'] as { readonly history: readonly unknown[] };
   projected['context'] =
     context.history.length === 0 ? context : { history: context.history };
@@ -2191,66 +2176,17 @@ describe('v1↔v2 agent interaction parity', () => {
     }
   });
 
-  it('plan mode lifecycle matches: enter / getPlan / write / clear / cancel', async () => {
+  it('disables plan mode on the v2 local RLM surface', async () => {
     const restoreEnv = scrubConfigEnv();
     const pair = await makeAgentParityPair();
     try {
       await createOnBoth(pair, { id: 'session_parity_agent_plan' });
       const input = { sessionId: 'session_parity_agent_plan' } as const;
-      await Promise.all([
-        pair.v1.setPlanMode({ ...input, enabled: true }),
-        pair.v2.setPlanMode({ ...input, enabled: true }),
-      ]);
-      const [v1Plan, v2Plan] = await Promise.all([
-        pair.v1.getPlan(input),
-        pair.v2.getPlan(input),
-      ]);
-      const projectPlan = KNOWN_DIFFS.getPlan;
-      expect(projectPlan(v2Plan, pair.v2Home)).toEqual(projectPlan(v1Plan, pair.v1Home));
-      expect(v1Plan?.id.length).toBeGreaterThan(0);
-      expect(v2Plan?.id.length).toBeGreaterThan(0);
-      expect(v1Plan?.content).toBe('');
-      const [v1Status, v2Status] = await Promise.all([
-        pair.v1.getStatus(input),
-        pair.v2.getStatus(input),
-      ]);
-      expect(v1Status.planMode).toBe(true);
-      expect(v2Status.planMode).toBe(true);
-      // Plan content round-trips through the plan file on both engines.
-      expect(v1Plan).not.toBeNull();
-      expect(v2Plan).not.toBeNull();
-      await writeFile(v1Plan!.path, '# Parity plan', 'utf-8');
-      await writeFile(v2Plan!.path, '# Parity plan', 'utf-8');
-      const [v1Filled, v2Filled] = await Promise.all([
-        pair.v1.getPlan(input),
-        pair.v2.getPlan(input),
-      ]);
-      expect(projectPlan(v2Filled, pair.v2Home)).toEqual(projectPlan(v1Filled, pair.v1Home));
-      expect(v1Filled?.content).toBe('# Parity plan');
-      await Promise.all([pair.v1.clearPlan(input), pair.v2.clearPlan(input)]);
-      const [v1Cleared, v2Cleared] = await Promise.all([
-        pair.v1.getPlan(input),
-        pair.v2.getPlan(input),
-      ]);
-      expect(projectPlan(v2Cleared, pair.v2Home)).toEqual(projectPlan(v1Cleared, pair.v1Home));
-      expect(v1Cleared?.content).toBe('');
-      // A second enter while active rejects with the same plain error.
-      await expect(pair.v1.setPlanMode({ ...input, enabled: true })).rejects.toThrowError(
-        'Already in plan mode',
-      );
-      await expect(pair.v2.setPlanMode({ ...input, enabled: true })).rejects.toThrowError(
-        'Already in plan mode',
-      );
-      await Promise.all([
-        pair.v1.setPlanMode({ ...input, enabled: false }),
-        pair.v2.setPlanMode({ ...input, enabled: false }),
-      ]);
-      const [v1Off, v2Off] = await Promise.all([
-        pair.v1.getPlan(input),
-        pair.v2.getPlan(input),
-      ]);
-      expect(v2Off).toEqual(v1Off);
-      expect(v1Off).toBeNull();
+      await expect(pair.v2.setPlanMode({ ...input, enabled: true })).rejects.toMatchObject({
+        code: ErrorCodes.SESSION_PLAN_MODE_INVALID,
+      });
+      await expect(pair.v2.setPlanMode({ ...input, enabled: false })).resolves.toBeUndefined();
+      await expect(pair.v2.getPlan(input)).resolves.toBeNull();
     } finally {
       await closeSessionPair(pair);
       restoreEnv();
@@ -2347,10 +2283,8 @@ describe('v1↔v2 agent interaction parity', () => {
     try {
       await createOnBoth(pair, { id: 'session_parity_resume_replay' });
       const input = { sessionId: 'session_parity_resume_replay' } as const;
-      // History without a single provider call: an import, a mode switch to a
-      // NON-default mode (v1 journals even an unchanged setMode where v2
-      // dedupes — a distinct mode records on both), plan mode, a goal
-      // lifecycle, and a shell command.
+      // History without a single provider call: an import, a permission
+      // update, a goal lifecycle, and a shell command.
       await Promise.all([
         pair.v1.importContext({ ...input, content: 'Resume replay import.', source: "file 'r.md'" }),
         pair.v2.importContext({ ...input, content: 'Resume replay import.', source: "file 'r.md'" }),
@@ -2362,10 +2296,6 @@ describe('v1↔v2 agent interaction parity', () => {
       await Promise.all([
         pair.v1.setPermission({ ...input, mode: 'manual' }),
         pair.v2.setPermission({ ...input, mode: 'manual' }),
-      ]);
-      await Promise.all([
-        pair.v1.setPlanMode({ ...input, enabled: true }),
-        pair.v2.setPlanMode({ ...input, enabled: true }),
       ]);
       await Promise.all([
         pair.v1.createGoal({ ...input, objective: 'resume replay goal' }),
@@ -2413,7 +2343,6 @@ describe('v1↔v2 agent interaction parity', () => {
         'permission_updated',
         'message',
         'permission_updated',
-        'plan_updated',
         'goal_updated',
         'goal_updated',
         'message',
@@ -5108,154 +5037,37 @@ describe('v1↔v2 residual surface parity', () => {
     }
   });
 
-  it('startBtw forks a side-question child with the parent context on both engines', async () => {
+  it('disables btw on both local SDK engines', async () => {
     const pair = await makeSessionParityPair();
     try {
       await createOnBoth(pair, { id: 'session_parity_btw' });
-      const sessionId = 'session_parity_btw';
-      await Promise.all([
-        pair.v1.importContext({ sessionId, content: 'btw parity context', source: 'parity' }),
-        pair.v2.importContext({ sessionId, content: 'btw parity context', source: 'parity' }),
-      ]);
-      const [v1ChildId, v2ChildId] = await Promise.all([
-        pair.v1.startBtw({ sessionId }),
-        pair.v2.startBtw({ sessionId }),
-      ]);
-      // The return is the forked child's agent id — random per engine, so
-      // only its shape compares; the child's CONTEXT compares in full below.
-      expect(typeof v1ChildId).toBe('string');
-      expect(v1ChildId.length).toBeGreaterThan(0);
-      expect(typeof v2ChildId).toBe('string');
-      expect(v2ChildId.length).toBeGreaterThan(0);
-      const [v1Context, v2Context] = await Promise.all([
-        pair.v1.withInteractiveAgent(v1ChildId, () => pair.v1.getContext({ sessionId })),
-        pair.v2.withInteractiveAgent(v2ChildId, () => pair.v2.getContext({ sessionId })),
-      ]);
-      // Inheritance gap, pinned: v1's btw child inherits through the
-      // model-facing `project()`, which strips every message's `origin`,
-      // while v2's fork appends the canonical messages verbatim (origin
-      // kept). The message CONTENT is identical on both — compare with the
-      // origins projected away.
-      const stripOrigins = (context: { readonly history: readonly unknown[] }): unknown =>
-        JSON.parse(
-          JSON.stringify(context.history, (key, value: unknown) =>
-            key === 'origin' ? undefined : value,
-          ),
-        );
-      // Both engines materialize the side-question reminder while forking:
-      // v2 appends it at the fork event point (a past-tense one-off fact),
-      // so the inherited contexts are already identical right after fork.
-      expect(v1Context.history).toHaveLength(2);
-      expect(v2Context.history).toHaveLength(2);
-      expect(stripOrigins(v2Context)).toEqual(stripOrigins(v1Context));
-      // Non-vacuous: the inherited import plus the side-question reminder
-      // (byte-identical template on both engines).
-      const v1History = v1Context.history;
-      expect(v1History.length).toBeGreaterThanOrEqual(2);
-      const reminder = v1History.at(-1);
-      expect(JSON.stringify(reminder)).toContain('side-channel conversation');
+      const input = { sessionId: 'session_parity_btw' } as const;
+
+      await expect(pair.v1.startBtw(input)).rejects.toMatchObject({
+        code: ErrorCodes.REQUEST_INVALID,
+      });
+      await expect(pair.v2.startBtw(input)).rejects.toMatchObject({
+        code: ErrorCodes.REQUEST_INVALID,
+      });
     } finally {
       await closeSessionPair(pair);
     }
   });
 
-  it('setSwarmMode toggles swarm mode with the same reminder lifecycle on both engines', async () => {
+  it('disables swarm mode and swarm prompts on the v2 local RLM surface', async () => {
     const pair = await makeSessionParityPair();
     try {
       await createOnBoth(pair, { id: 'session_parity_swarm' });
       const input = { sessionId: 'session_parity_swarm' } as const;
-      const statusOnBoth = () =>
-        Promise.all([pair.v1.getStatus(input), pair.v2.getStatus(input)]);
-      const historyOnBoth = () =>
-        Promise.all([pair.v1.getContext(input), pair.v2.getContext(input)]);
-
-      // Enter with the manual trigger: active on both, and the (byte-identical)
-      // enter reminder lands in the context on both.
-      await Promise.all([
-        pair.v1.setSwarmMode({ ...input, enabled: true, trigger: 'manual' }),
+      await expect(
         pair.v2.setSwarmMode({ ...input, enabled: true, trigger: 'manual' }),
-      ]);
-      const [v1Active, v2Active] = await statusOnBoth();
-      expect(v1Active.swarmMode).toBe(true);
-      expect(v2Active.swarmMode).toBe(true);
-      const project = KNOWN_DIFFS.getContext;
-      const [v1Entered, v2Entered] = await historyOnBoth();
-      expect(project(v2Entered)).toEqual(project(v1Entered));
-      expect(v1Entered.history).toHaveLength(1);
-      expect(JSON.stringify(v1Entered.history[0])).toContain('<system-reminder>');
-
-      // Enter is idempotent on both: still one reminder, still active.
-      await Promise.all([
-        pair.v1.setSwarmMode({ ...input, enabled: true, trigger: 'manual' }),
-        pair.v2.setSwarmMode({ ...input, enabled: true, trigger: 'manual' }),
-      ]);
-      const [v1Twice, v2Twice] = await historyOnBoth();
-      expect(v1Twice.history).toHaveLength(1);
-      expect(v2Twice.history).toHaveLength(1);
-
-      // Exit pops the reminder (it is the last message) on both.
-      await Promise.all([
-        pair.v1.setSwarmMode({ ...input, enabled: false }),
+      ).rejects.toMatchObject({ code: ErrorCodes.REQUEST_INVALID });
+      await expect(
         pair.v2.setSwarmMode({ ...input, enabled: false }),
-      ]);
-      const [v1Inactive, v2Inactive] = await statusOnBoth();
-      expect(v1Inactive.swarmMode).toBe(false);
-      expect(v2Inactive.swarmMode).toBe(false);
-      const [v1Exited, v2Exited] = await historyOnBoth();
-      expect(v1Exited.history).toHaveLength(0);
-      expect(project(v2Exited)).toEqual(project(v1Exited));
-
-      // Exit is idempotent too: a second exit is a silent no-op on both.
-      await Promise.all([
-        pair.v1.setSwarmMode({ ...input, enabled: false }),
-        pair.v2.setSwarmMode({ ...input, enabled: false }),
-      ]);
-      const [v1Idle, v2Idle] = await historyOnBoth();
-      expect(v1Idle.history).toHaveLength(0);
-      expect(project(v2Idle)).toEqual(project(v1Idle));
-
-      // The `tool` trigger injects no reminder on either engine.
-      await Promise.all([
-        pair.v1.setSwarmMode({ ...input, enabled: true, trigger: 'tool' }),
-        pair.v2.setSwarmMode({ ...input, enabled: true, trigger: 'tool' }),
-      ]);
-      const [v1Tool, v2Tool] = await statusOnBoth();
-      expect(v1Tool.swarmMode).toBe(true);
-      expect(v2Tool.swarmMode).toBe(true);
-      const [v1ToolHistory, v2ToolHistory] = await historyOnBoth();
-      expect(v1ToolHistory.history).toHaveLength(0);
-      expect(project(v2ToolHistory)).toEqual(project(v1ToolHistory));
-      await Promise.all([
-        pair.v1.setSwarmMode({ ...input, enabled: false }),
-        pair.v2.setSwarmMode({ ...input, enabled: false }),
-      ]);
-    } finally {
-      await closeSessionPair(pair);
-    }
-  });
-
-  it('swarm() enters task-triggered swarm mode, prompts, and auto-exits after the turn', async () => {
-    const pair = await makeSessionParityPair();
-    try {
-      await createOnBoth(pair, { id: 'session_parity_swarm_prompt' });
-      const input = { sessionId: 'session_parity_swarm_prompt' } as const;
-      // The model-less prompt fails asynchronously on both engines; the turn
-      // still starts and ends, which is what drives the task-trigger
-      // auto-exit. `swarm()` itself resolves on both (v1's prompt RPC
-      // returns after launch; v2's after enqueue).
-      await Promise.all([
-        pair.v1.swarm({ ...input, input: [{ type: 'text', text: 'parity swarm prompt' }] }),
-        pair.v2.swarm({ ...input, input: [{ type: 'text', text: 'parity swarm prompt' }] }),
-      ]);
-      const settled = await waitForCondition(async () => {
-        const [v1Status, v2Status] = await Promise.all([
-          pair.v1.getStatus(input),
-          pair.v2.getStatus(input),
-        ]);
-        return v1Status.swarmMode === false && v2Status.swarmMode === false;
-      });
-      expect(settled).toBe(true);
-      await settleTurns();
+      ).resolves.toBeUndefined();
+      await expect(
+        pair.v2.swarm({ ...input, input: [{ type: 'text', text: 'disabled' }] }),
+      ).rejects.toMatchObject({ code: ErrorCodes.REQUEST_INVALID });
     } finally {
       await closeSessionPair(pair);
     }

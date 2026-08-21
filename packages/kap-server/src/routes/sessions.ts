@@ -5,9 +5,7 @@ import {
   IAgentConversationUndoService,
   IAgentFullCompactionService,
   IAgentLoopService,
-  IAuthSummaryService,
   ISessionActivityView,
-  ISessionBtwService,
   ISessionContext,
   ISessionIndex,
   ISessionMetadata,
@@ -938,15 +936,11 @@ async function abortSessionAction(ctx: SessionActionCtx): Promise<void> {
   reply.send(okEnvelope({ aborted: true }, req.id));
 }
 
-async function btwSessionAction(ctx: SessionActionCtx): Promise<void> {
-  const { core, req, reply, id } = ctx;
-  const session = await resumeSessionById(core.accessor, id);
-  if (session === undefined) {
-    throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${id} does not exist`);
-  }
-  await core.accessor.get(IAuthSummaryService).ensureReady();
-  const agentId = await session.accessor.get(ISessionBtwService).start();
-  reply.send(okEnvelope({ agent_id: agentId }, req.id));
+async function btwSessionAction(_ctx: SessionActionCtx): Promise<void> {
+  throw new Error2(
+    ErrorCodes.REQUEST_INVALID,
+    'Side questions are disabled in this local single-agent RLM build.',
+  );
 }
 
 async function restoreSessionAction(ctx: SessionActionCtx): Promise<void> {

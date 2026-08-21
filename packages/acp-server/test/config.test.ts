@@ -4,7 +4,6 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { AcpSession } from '../src/session';
 import { createTestClient, type TestClient } from './_helpers/acpClient';
 import { FAKE_MODEL_ALT_ID, writeFakeModelConfig } from './_helpers/fakeModelConfig';
 
@@ -93,12 +92,7 @@ describe('acp-server config surface', () => {
       await boot();
       const { modes } = await newSession();
       expect(modes?.currentModeId).toBe('default');
-      expect(modes?.availableModes.map((m) => m.id)).toEqual([
-        'default',
-        'plan',
-        'auto',
-        'yolo',
-      ]);
+      expect(modes?.availableModes.map((m) => m.id)).toEqual(['default', 'auto', 'yolo']);
     },
     30_000,
   );
@@ -128,31 +122,6 @@ describe('acp-server config surface', () => {
   );
 
   it(
-    'session/set_mode propagates plan errors without reporting a new mode',
-    async () => {
-      const session = Object.create(AcpSession.prototype) as AcpSession;
-      const updates: unknown[] = [];
-      const agent = {
-        enterPlan: async () => {
-          throw new Error('plan toggle failed');
-        },
-        setPermission: async () => {},
-      };
-      Object.assign(session as unknown as Record<string, unknown>, {
-        agent,
-        conn: { sessionUpdate: async (update: unknown) => updates.push(update) },
-        sessionId: 'session-test',
-        currentModeId: 'default',
-      });
-
-      await expect(session.setMode('plan')).rejects.toThrow('plan toggle failed');
-      expect((session as unknown as { currentModeId: string }).currentModeId).toBe('default');
-      expect(updates).toEqual([]);
-    },
-    30_000,
-  );
-
-  it(
     'session/set_config_option mode also pushes current_mode_update',
     async () => {
       await boot();
@@ -161,12 +130,12 @@ describe('acp-server config surface', () => {
       await client!.send('session/set_config_option', {
         sessionId,
         configId: 'mode',
-        value: 'plan',
+        value: 'auto',
       });
       const modeNotification = await modeUpdatePromise;
       const modeUpdate = (modeNotification.params as { update?: { currentModeId?: string } })
         .update;
-      expect(modeUpdate?.currentModeId).toBe('plan');
+      expect(modeUpdate?.currentModeId).toBe('auto');
     },
     30_000,
   );

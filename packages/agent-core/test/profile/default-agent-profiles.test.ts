@@ -31,6 +31,16 @@ describe('default agent profiles', () => {
     expect(prompt).toContain('/workspace');
   });
 
+  it('calls tools directly without requiring progress narration', () => {
+    for (const name of ['agent', 'coder', 'explore', 'plan']) {
+      const prompt = DEFAULT_AGENT_PROFILES[name]?.systemPrompt(promptContext) ?? '';
+      expect(prompt).toContain('When the next action is clear, call the appropriate tool directly.');
+      expect(prompt).not.toMatch(
+        /progress notes|first emit|8–10 words|keep the user oriented|move to a distinctly new phase/i,
+      );
+    }
+  });
+
   it('keeps static instructions before dynamic prompt context', () => {
     const prompt = DEFAULT_AGENT_PROFILES['agent']?.systemPrompt(promptContext) ?? '';
 

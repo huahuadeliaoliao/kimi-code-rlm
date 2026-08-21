@@ -1,5 +1,8 @@
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 
+export const BTW_DISABLED_MESSAGE =
+  'Side questions are disabled in this local single-agent RLM build.';
+
 export const TOOL_CALL_DISABLED_MESSAGE =
   'Tool calls are disabled for side questions. Answer with text only.';
 

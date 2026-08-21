@@ -36,7 +36,8 @@ describe('systemPromptVars', () => {
         shellName: 'zsh',
         shellPath: '/bin/zsh',
         now: 'NOW',
-        additionalDirsInfo: '/extra',
+        additionalDirsInfo: '### /extra\nextra-file.txt',
+        additionalDirs: ['/extra'],
       },
       { skillActive: true },
     );
@@ -49,7 +50,11 @@ describe('systemPromptVars', () => {
     expect(vars['cwd']).toBe('/work');
     expect(vars['cwd_listing']).toBe('LISTING');
     expect(vars['agents_md']).toBe('AGENTS');
-    expect(vars['additional_dirs_info']).toBe('/extra');
+    expect(vars['additional_dirs_info']).toBe('### /extra\nextra-file.txt');
+    expect(vars['additional_dirs_paths']).toBe('- /extra');
+    expect(vars['additional_dirs_paths_section']).toContain('/extra');
+    expect(vars['additional_dirs_paths_section']).not.toContain('extra-file.txt');
+    expect(vars['agents_md_section']).toContain('AGENTS');
     expect(vars['skills']).toBe('SKILLS');
     expect(vars['additional_dirs_section']).toContain('## Additional Directories');
     expect(vars['additional_dirs_section']).toContain('/extra');
@@ -66,6 +71,8 @@ describe('systemPromptVars', () => {
     expect(vars['agents_md']).toBe('');
     expect(vars['additional_dirs_info']).toBe('');
     expect(vars['additional_dirs_section']).toBe('');
+    expect(vars['additional_dirs_paths_section']).toBe('');
+    expect(vars['agents_md_section']).toBe('');
     expect(vars['skills']).toBe('');
     expect(vars['skills_section']).toBe('');
     expect(vars['windows_notes']).toBe('');
@@ -219,6 +226,17 @@ describe('renderSystemPromptResult', () => {
     expect(prompt).toContain('/work');
     expect(prompt).toContain('# Skills');
     expect(prompt).toContain('SKILLS');
+  });
+
+  it('calls tools directly without requiring progress narration', () => {
+    const prompt = renderSystemPromptResult('', {}, { skillActive: true }).text;
+
+    expect(prompt).toContain('When the next action is clear, call the appropriate tool directly.');
+    expect(prompt).toContain('Do not preface tool calls with a plan');
+    expect(prompt).toContain('report when you have an answer or finished result');
+    expect(prompt).not.toMatch(
+      /progress notes|first emit|8–10 words|keep the user oriented|move to a distinctly new phase/i,
+    );
   });
 
   it('omits the skills section when the profile disables the Skill tool', () => {

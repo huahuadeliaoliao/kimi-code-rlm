@@ -82,8 +82,8 @@ export function validateOptions(
   if (promptMode && opts.auto) {
     throw new OptionConflictError('Cannot combine --prompt with --auto.');
   }
-  if (promptMode && opts.plan) {
-    throw new OptionConflictError('Cannot combine --prompt with --plan.');
+  if (opts.plan) {
+    throw new OptionConflictError('Plan mode is disabled in this local RLM build.');
   }
   if (opts.agent !== undefined && opts.agent.trim().length === 0) {
     throw new OptionConflictError('Agent cannot be empty.');

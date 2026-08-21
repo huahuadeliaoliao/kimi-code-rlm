@@ -1,43 +1,24 @@
 import { collectGitContext } from './gitContext';
 import { registerAgentProfile } from '#/app/agentProfileCatalog/contribution';
 import {
+  renderPromptTemplateResult,
   renderSystemPromptResult,
   skillActiveFor,
   TASK_AGENT_ROLE_PREFIX,
 } from '#/app/agentProfileCatalog/profile-shared';
 
+import RLM_SYSTEM_PROMPT from '../../../features/rlm/rlm-system.md?raw';
 import EXPLORE_ROLE from './explore-overlay.md?raw';
 import SUMMARY_CONTINUATION_PROMPT from './summary-continuation.md?raw';
 
 const AGENT_TOOLS = [
-  'Read',
-  'Write',
-  'Edit',
-  'Grep',
-  'Glob',
-  'Bash',
-  'TaskList',
-  'TaskOutput',
-  'TaskStop',
-  'WaitFor',
-  'CronCreate',
-  'CronList',
-  'CronDelete',
+  'RlmKernel',
   'ReadMediaFile',
-  'TodoList',
   'Skill',
-  'WebSearch',
-  'Agent',
-  'AgentSwarm',
   'FetchURL',
-  'AskUserQuestion',
-  'EnterPlanMode',
-  'ExitPlanMode',
   'CreateGoal',
   'GetGoal',
-  'SetGoalBudget',
   'UpdateGoal',
-  'TowerInit',
   'mcp__*',
 ] as const;
 
@@ -47,8 +28,6 @@ const CODER_TOOLS = [
   'CronDelete',
   'CronList',
   'Edit',
-  'EnterPlanMode',
-  'ExitPlanMode',
   'Glob',
   'Grep',
   'Read',
@@ -94,7 +73,9 @@ registerAgentProfile({
   description: 'Default agent',
   tools: AGENT_TOOLS,
   renderSystemPrompt: (context) =>
-    renderSystemPromptResult('', context, { skillActive: skillActiveFor(AGENT_TOOLS) }),
+    renderPromptTemplateResult(RLM_SYSTEM_PROMPT, context, {
+      skillActive: skillActiveFor(AGENT_TOOLS),
+    }),
 });
 
 registerAgentProfile({

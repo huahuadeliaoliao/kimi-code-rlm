@@ -370,7 +370,7 @@ async function runSlash(
 
 describe("VS Code Kimi harness integration (shares one in-process SDK home)", () => {
   it("only intercepts released slash commands and user-invoked skills", () => {
-    expect(parseHostSlashCommand("/plan on")).toEqual({ name: "plan", args: "on", raw: "/plan on" });
+    expect(parseHostSlashCommand("/plan on")).toBeUndefined();
     expect(parseHostSlashCommand(" /skill:review carefully ")).toEqual({
       name: "skill:review",
       args: "carefully",
@@ -398,7 +398,6 @@ describe("VS Code Kimi harness integration (shares one in-process SDK home)", ()
       "clear",
       "yolo",
       "auto",
-      "plan",
       "add-dir",
       "export",
       "import",
@@ -1166,15 +1165,8 @@ describe("VS Code Kimi harness integration (shares one in-process SDK home)", ()
     });
   });
 
-  it("toggles plan mode through the public session without calling the model", async () => {
-    const rig = await createRuntimeRig();
-    const runtime = await openRuntimeSession(rig);
-
-    await expect(runSlash(runtime, "/plan on")).resolves.toBe(true);
-    await expect(runtime.session.getStatus()).resolves.toMatchObject({ planMode: true });
-    await expect(runSlash(runtime, "/plan off")).resolves.toBe(true);
-    await expect(runtime.session.getStatus()).resolves.toMatchObject({ planMode: false });
-    expect(rig.provider.requests).toHaveLength(0);
+  it("does not expose the removed plan slash command", () => {
+    expect(parseHostSlashCommand("/plan on")).toBeUndefined();
   });
 
   it("keeps a slash-added directory after VS Code closes and resumes the session", async () => {
@@ -1189,17 +1181,6 @@ describe("VS Code Kimi harness integration (shares one in-process SDK home)", ()
     const resumed = await openRuntimeSession(rig, sessionId);
 
     expect(resumed.session.summary?.additionalDirs).toContain(additionalDir);
-  });
-
-  it("rejects an invalid plan subcommand without leaving the runtime busy", async () => {
-    const rig = await createRuntimeRig();
-    const runtime = await openRuntimeSession(rig);
-
-    await expect(runSlash(runtime, "/plan sideways")).rejects.toThrow(
-      "Unknown plan subcommand: sideways",
-    );
-
-    expect(runtime.isBusy).toBe(false);
   });
 
   it("fails a prompt sent while a turn is running without disturbing the active turn", async () => {

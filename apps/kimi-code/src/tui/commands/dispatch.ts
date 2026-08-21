@@ -25,7 +25,6 @@ import {
   findInlineSkillTokens,
 } from '../utils/inline-skill-tokens';
 import { handleLoginCommand, handleLogoutCommand } from './auth';
-import { handleBtwCommand } from './btw';
 import { handleCopyCommand } from './copy';
 import {
   handleAutoCommand,
@@ -33,7 +32,6 @@ import {
   handleEditorCommand,
   handleEffortCommand,
   handleModelCommand,
-  handlePlanCommand,
   handleSecondaryModelCommand,
   handleThemeCommand,
   handleYoloCommand,
@@ -68,7 +66,6 @@ import {
   handleInitCommand,
   handleTitleCommand,
 } from './session';
-import { handleSwarmCommand } from './swarm';
 import { handleUndoCommand } from './undo';
 import { handleWebCommand } from './web';
 
@@ -77,7 +74,6 @@ import { handleWebCommand } from './web';
 // ---------------------------------------------------------------------------
 
 export { handleLoginCommand, handleLogoutCommand } from './auth';
-export { handleBtwCommand } from './btw';
 export { handleCopyCommand } from './copy';
 export { handleAddDirCommand } from './add-dir';
 export {
@@ -86,7 +82,6 @@ export {
   handleEditorCommand,
   handleEffortCommand,
   handleModelCommand,
-  handlePlanCommand,
   handleSecondaryModelCommand,
   handleThemeCommand,
   handleYoloCommand,
@@ -95,7 +90,6 @@ export {
   showPermissionPicker,
   showSettingsSelector,
 } from './config';
-export { handleSwarmCommand } from './swarm';
 export { handleFeedbackCommand, showMcpServers, showStatusReport, showUsage } from './info';
 export { handlePluginsCommand } from './plugins';
 export { handleReloadCommand, handleReloadTuiCommand } from './reload';
@@ -378,6 +372,10 @@ async function executeSlashCommand(host: SlashCommandHost, input: string): Promi
       return;
     }
     case 'message':
+      if (parsedCommand?.name === 'btw') {
+        host.showError('Side questions are disabled in this local single-agent RLM build.');
+        return;
+      }
       // Unknown slash command: let /dance claim it before it falls through to
       // the model as a normal message. This runs *after* builtin and skill
       // resolution, so a real command or a same-named skill always wins.
@@ -416,15 +414,12 @@ async function ensureSessionForCommand(host: SlashCommandHost): Promise<Session 
 
 /** Builtin commands that need an active session; lazy-created on the v2 engine. */
 const SESSION_REQUIRING_COMMANDS: ReadonlySet<BuiltinSlashCommandName> = new Set([
-  'btw',
   'compact',
   'export-debug-zip',
   'export-md',
   'fork',
   'goal',
   'init',
-  'plan',
-  'swarm',
   'undo',
   'web',
 ]);
@@ -555,9 +550,6 @@ async function handleBuiltInSlashCommand(
     case 'feedback':
       await handleFeedbackCommand(host);
       return;
-    case 'btw':
-      await handleBtwCommand(host, args);
-      return;
     case 'title':
       await handleTitleCommand(host, args);
       return;
@@ -566,12 +558,6 @@ async function handleBuiltInSlashCommand(
       return;
     case 'auto':
       await handleAutoCommand(host, args);
-      return;
-    case 'plan':
-      await handlePlanCommand(host, args);
-      return;
-    case 'swarm':
-      await handleSwarmCommand(host, args);
       return;
     case 'compact':
       await handleCompactCommand(host, args);

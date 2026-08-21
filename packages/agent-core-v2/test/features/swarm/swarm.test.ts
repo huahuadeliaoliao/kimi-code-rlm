@@ -38,6 +38,7 @@ import type {
 } from '#/agent/toolExecutor/toolHooks';
 import type { ToolCall } from '#/kosong/contract/message';
 import type { ExecutableToolContext } from '#/tool/toolContract';
+import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { AgentToolRegistryService } from '#/agent/toolRegistry/toolRegistryService';
 import { IAgentLoopService } from '#/agent/loop/loop';
@@ -191,6 +192,7 @@ describe('AgentSwarmService', () => {
   let ix: TestInstantiationService;
   let executorEvents: ToolExecutorEventStubs;
   let permissionGateRan: boolean;
+  let swarmEnabled: boolean;
   let formatDenyMessage: Mock<(message: string) => string>;
 
   beforeEach(() => {
@@ -210,6 +212,10 @@ describe('AgentSwarmService', () => {
     ix.set(IAgentStateService, new AgentStateService());
     ix.set(IAgentContextInjectorService, new SyncDescriptor(AgentContextInjectorService));
     ix.set(IAgentToolRegistryService, new SyncDescriptor(AgentToolRegistryService));
+    swarmEnabled = true;
+    ix.stub(IAgentToolPolicyService, {
+      isToolActive: (name: string) => swarmEnabled && name === 'AgentSwarm',
+    });
     ix.stub(IAgentLifecycleService, {});
     ix.stub(ISessionSwarmService, {
       getSwarmItem: async () => undefined,
@@ -242,6 +248,28 @@ describe('AgentSwarmService', () => {
     );
     return executorEvents.fireBeforeExecute(ctx);
   }
+
+  it('does not enter or inject swarm state when AgentSwarm is inactive', async () => {
+    swarmEnabled = false;
+    const swarm = ix.get(IAgentSwarmService);
+
+    swarm.enter('manual');
+    await runInjectionBoundary(ix.get(IAgentLoopService));
+
+    expect(swarm.isActive).toBe(false);
+    expect(ix.get(IAgentContextMemoryService).get()).toHaveLength(0);
+  });
+
+  it('suppresses a restored active reminder after AgentSwarm becomes inactive', async () => {
+    const swarm = ix.get(IAgentSwarmService);
+    swarm.enter('manual');
+    swarmEnabled = false;
+
+    await runInjectionBoundary(ix.get(IAgentLoopService));
+
+    expect(swarm.isActive).toBe(true);
+    expect(ix.get(IAgentContextMemoryService).get()).toHaveLength(0);
+  });
 
   it('enter / exit toggle isActive and emit agent.status.updated via wire', () => {
     const swarm = ix.get(IAgentSwarmService);

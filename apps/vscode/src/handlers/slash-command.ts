@@ -21,7 +21,6 @@ const HOST_COMMANDS = new Set([
   "yolo",
   "auto",
   "afk",
-  "plan",
   "add-dir",
   "export",
   "import",
@@ -89,9 +88,6 @@ export async function runHostSlashCommand(
         case "afk":
           await toggleLegacyPermission(runtime, "afk", emit);
           break;
-        case "plan":
-          await runPlanCommand(runtime, command.args, emit);
-          break;
         case "add-dir":
           await runAddDirCommand(runtime, command.args, emit);
           break;
@@ -133,38 +129,6 @@ async function toggleLegacyPermission(
     : flags.yolo
       ? "Auto mode disabled. You are back at the keyboard. Yolo is still on."
       : "Auto mode disabled. You are back at the keyboard.");
-}
-
-async function runPlanCommand(
-  runtime: SessionRuntime,
-  args: string,
-  emit: (text: string) => void,
-): Promise<void> {
-  const subcommand = args.trim().toLowerCase();
-  if (subcommand === "view") {
-    const plan = await runtime.session.getPlan();
-    emit(plan?.content.trim() || "No plan file found for this session.");
-    return;
-  }
-  if (subcommand === "clear") {
-    await runtime.session.clearPlan();
-    emit("Plan cleared.");
-    return;
-  }
-  const status = await runtime.session.getStatus();
-  const enabled = subcommand === "on" ? true : subcommand === "off" ? false : !status.planMode;
-  if (subcommand && subcommand !== "on" && subcommand !== "off") {
-    throw new Error(`Unknown plan subcommand: ${subcommand}`);
-  }
-  if (status.planMode !== enabled) await runtime.session.setPlanMode(enabled);
-  if (!enabled) {
-    emit("Plan mode OFF. All tools are now available.");
-    return;
-  }
-  const plan = await runtime.session.getPlan().catch(() => null);
-  emit(plan?.path
-    ? `Plan mode ON. Plan file: ${plan.path}`
-    : "Plan mode ON.");
 }
 
 async function runAddDirCommand(

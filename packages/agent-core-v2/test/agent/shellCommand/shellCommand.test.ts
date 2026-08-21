@@ -4,6 +4,7 @@ import type { ContextMessage } from '#/agent/contextMemory/types';
 import {
   IAgentContextMemoryService,
   IAgentShellCommandService,
+  IBashTool,
   IAgentToolRegistryService,
   IEventBus,
 } from '#/index';
@@ -137,7 +138,10 @@ describe('AgentShellCommandService', () => {
       list: () => [fakeBash],
       resolve: () => fakeBash,
     } as unknown as IAgentToolRegistryService;
-    ctx = createTestAgent(agentService(IAgentToolRegistryService, registry));
+    ctx = createTestAgent(
+      agentService(IAgentToolRegistryService, registry),
+      agentService(IBashTool, fakeBash as unknown as IBashTool),
+    );
     const events: { type: string; commandId?: string; taskId?: string }[] = [];
     ctx.get(IEventBus).subscribe((event) => events.push(event as (typeof events)[number]));
 
@@ -166,7 +170,7 @@ describe('AgentShellCommandService', () => {
     expect(relevant.at(-1)).toMatchObject({ type: 'shell.completed', commandId: 'cmd-3' });
   });
 
-  it('records the failure when the Bash tool is not registered', async () => {
+  it('keeps user shell commands working when Bash is absent from the model registry', async () => {
     const emptyRegistry: IAgentToolRegistryService = {
       _serviceBrand: undefined,
       register: () => ({ dispose: () => {} }),
@@ -180,12 +184,11 @@ describe('AgentShellCommandService', () => {
 
     const result = await shell.run({ command: 'echo hi' });
 
-    expect(result.isError).toBe(true);
-    expect(result.stderr).toContain('Bash tool is not registered');
+    expect(result.isError).toBe(false);
+    expect(result.stdout).toContain('hi');
     expect(context.get().map(({ role, origin }) => ({ role, origin }))).toEqual([
       { role: 'user', origin: { kind: 'shell_command', phase: 'input' } },
-      { role: 'user', origin: { kind: 'shell_command', phase: 'output', isError: true } },
+      { role: 'user', origin: { kind: 'shell_command', phase: 'output' } },
     ]);
-    expect(textOf(context.get()[1]!)).toContain('Bash tool is not registered');
   });
 });

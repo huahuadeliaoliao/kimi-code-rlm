@@ -55,7 +55,7 @@ describe('status panel report lines', () => {
     expect(output).toContain('Model        Kimi K2 (thinking high)');
     expect(output).toContain('Directory    /tmp/project');
     expect(output).toContain('Permissions  auto');
-    expect(output).toContain('Plan mode    on');
+    expect(output).not.toContain('Plan mode');
     expect(output).toContain('Session      ses-1');
     expect(output).toContain('Title        Implement status');
     expect(output).toContain('Context window');

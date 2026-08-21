@@ -127,6 +127,12 @@ export class KimiHarness {
 
   async createSession(options: CreateSessionOptions): Promise<Session> {
     const { planMode, kaos, persistenceKaos, sessionStartedProperties, ...coreOptions } = options;
+    if (planMode === true) {
+      throw new KimiError(
+        ErrorCodes.SESSION_PLAN_MODE_INVALID,
+        'Plan mode is disabled in this local RLM build.',
+      );
+    }
     const summary =
       kaos === undefined && persistenceKaos === undefined
         ? await this.rpc.createSession(coreOptions)
@@ -143,9 +149,6 @@ export class KimiHarness {
       },
     });
     this.activeSessions.set(session.id, session);
-    if (planMode === true) {
-      await session.setPlanMode(true);
-    }
     this.trackSessionStarted(summary.id, false, sessionStartedProperties);
     this.trackSessionEvent(session.id, 'session_new');
     return session;

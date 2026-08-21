@@ -261,9 +261,14 @@ describe('FullCompaction', () => {
       return candidate.type === '[wire]' && candidate.event === 'full_compaction.complete';
     });
     expect(completeEvent?.args).toEqual({ time: '<time>' });
-    expect(ctx.lastLlmInput()).toMatchInlineSnapshot(`
-      system: <system-prompt>
-      tools: Agent, AgentSwarm, EnterPlanMode, ExitPlanMode
+    const llmInput = ctx.lastLlmInput();
+    expect(JSON.stringify(llmInput)).toContain(
+      'Produce the continuity note requested by the final user message',
+    );
+    expect(JSON.stringify(llmInput)).toContain('What the latest request is actually asking for');
+    expect(llmInput).toMatchInlineSnapshot(`
+      system: "Produce the continuity note requested by the final user message for the next continuation of this task. Do not continue the task, answer earlier requests, call tools, or add commentary outside the note."
+      tools: []
       messages:
         user: text "old user one"
         assistant: text "old assistant one"
@@ -291,13 +296,13 @@ describe('FullCompaction', () => {
       properties: expect.objectContaining({
         agent_id: 'main',
         source: 'manual',
-        tokens_before: 3_302,
+        tokens_before: 3_166,
         tokens_after: expect.any(Number),
         duration_ms: expect.any(Number),
         compacted_count: 6,
         retry_count: 0,
         thinking_effort: 'off',
-        input_tokens: 1181,
+        input_tokens: 1095,
         output_tokens: 8,
         input_cache_read: 0,
         input_cache_creation: 0,
@@ -570,7 +575,7 @@ describe('FullCompaction', () => {
       session_id: 'test-session',
       cwd: dir,
       trigger: 'auto',
-      token_count: 3_302,
+      token_count: 3_166,
     });
     expect(post).toMatchObject({
       hook_event_name: 'PostCompact',
@@ -656,7 +661,7 @@ describe('FullCompaction', () => {
       event: 'compaction_finished',
       properties: expect.objectContaining({
         source: 'manual',
-        tokens_before: 14_980,
+        tokens_before: 14_876,
         retry_count: 1,
         trace_id: 'trace-compact-1',
       }),
@@ -1039,7 +1044,7 @@ describe('FullCompaction', () => {
       properties: expect.objectContaining({
         agent_id: 'main',
         source: 'manual',
-        tokens_before: 14_980,
+        tokens_before: 14_876,
         duration_ms: expect.any(Number),
         round: 1,
         retry_count: 0,
@@ -1264,7 +1269,7 @@ describe('FullCompaction', () => {
       event: 'compaction_failed',
       properties: expect.objectContaining({
         source: 'manual',
-        tokens_before: 14_980,
+        tokens_before: 14_876,
         duration_ms: expect.any(Number),
         retry_count: 4,
         error_type: 'APIConnectionError',
@@ -1315,8 +1320,8 @@ describe('FullCompaction', () => {
     await completed;
 
     expect(ctx.lastLlmInput()).toMatchInlineSnapshot(`
-      system: <system-prompt>
-      tools: Agent, AgentSwarm, EnterPlanMode, ExitPlanMode
+      system: "Produce the continuity note requested by the final user message for the next continuation of this task. Do not continue the task, answer earlier requests, call tools, or add commentary outside the note."
+      tools: []
       messages:
         user: text "old user one"
         assistant: text "old assistant one"
@@ -1377,8 +1382,8 @@ describe('FullCompaction', () => {
       ]),
     );
     expect(ctx.lastLlmInput()).toMatchInlineSnapshot(`
-      system: <system-prompt>
-      tools: Agent, AgentSwarm, EnterPlanMode, ExitPlanMode
+      system: "Produce the continuity note requested by the final user message for the next continuation of this task. Do not continue the task, answer earlier requests, call tools, or add commentary outside the note."
+      tools: []
       messages:
         user: text "old user one"
         assistant: text "old assistant one"
@@ -1532,8 +1537,8 @@ describe('FullCompaction', () => {
     expect(countEvents(events, 'context.apply_compaction')).toBe(0);
     expect(countEvents(events, 'full_compaction.complete')).toBe(0);
     expect(ctx.lastLlmInput()).toMatchInlineSnapshot(`
-      system: <system-prompt>
-      tools: Agent, AgentSwarm, EnterPlanMode, ExitPlanMode
+      system: "Produce the continuity note requested by the final user message for the next continuation of this task. Do not continue the task, answer earlier requests, call tools, or add commentary outside the note."
+      tools: []
       messages:
         user: text "old user one"
         assistant: text "old assistant one"
@@ -1616,8 +1621,8 @@ describe('FullCompaction', () => {
     );
     expect(ctx.llmInputs()).toMatchInlineSnapshot(`
       call 1:
-        system: <system-prompt>
-        tools: Agent, AgentSwarm, EnterPlanMode, ExitPlanMode
+        system: "Produce the continuity note requested by the final user message for the next continuation of this task. Do not continue the task, answer earlier requests, call tools, or add commentary outside the note."
+        tools: []
         messages:
           user: text "old user one"
           assistant: text "old assistant one"
@@ -1629,6 +1634,8 @@ describe('FullCompaction', () => {
           user: text <compaction-instruction>
 
       call 2:
+        system: <system-prompt>
+        tools: Agent, AgentSwarm, EnterPlanMode, ExitPlanMode
         messages:
           user: text "old user one\\n\\nold user two\\n\\nrecent user three\\n\\nAnswer after compacting"
           user: text "The conversation so far has been compacted to free up context. What follows is your own working summary of this task — use it to continue your train of thought rather than starting over. Treat it as notes, not proof: where it says a step was done, tests passed, or a fix worked, verify that yourself before relying on it. Any user messages earlier in this context are preserved verbatim from the compacted conversation; where a system-reminder note among them marks an omitted middle section, the user messages it replaced are covered by this summary.\\nAuto compacted summary."
@@ -1637,8 +1644,8 @@ describe('FullCompaction', () => {
       event: 'compaction_finished',
       properties: expect.objectContaining({
         source: 'auto',
-        tokens_before: 3_309,
-        tokens_after: 3_293,
+        tokens_before: 3_173,
+        tokens_after: 3_157,
         compacted_count: 7,
         retry_count: 0,
       }),
@@ -2897,7 +2904,7 @@ describe('FullCompaction', () => {
     `);
   });
 
-  it('appends the todo list to the compaction summary', async () => {
+  it('appends the todo list to the compaction summary only when TodoList is active', async () => {
     const todos = [
       { title: 'Fix the auth bug', status: 'in_progress' },
       { title: 'Add tests', status: 'pending' },
@@ -2912,6 +2919,7 @@ describe('FullCompaction', () => {
     ctx.configure({
       provider: CATALOGUED_PROVIDER,
       modelCapabilities: CATALOGUED_MODEL_CAPABILITIES,
+      tools: ['TodoList'],
     });
     ctx.appendExchange(1, 'old user one', 'old assistant one', 20);
     ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
@@ -2948,6 +2956,32 @@ describe('FullCompaction', () => {
       type: 'text',
       text: expect.stringContaining('The conversation so far has been compacted'),
     });
+    await ctx.expectResumeMatches();
+  });
+
+  it('omits stale todo state when TodoList is inactive', async () => {
+    const ctx = testAgent(
+      sessionServices((reg) => {
+        reg.definePartialInstance(ISessionTodoService, {
+          getTodos: () => [{ title: 'Legacy task', status: 'in_progress' }],
+        });
+      }),
+    );
+    ctx.configure({
+      provider: CATALOGUED_PROVIDER,
+      modelCapabilities: CATALOGUED_MODEL_CAPABILITIES,
+      tools: ['RlmKernel'],
+    });
+    ctx.appendExchange(1, 'old user one', 'old assistant one', 20);
+    ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
+    const completed = ctx.once('compaction.completed');
+
+    ctx.mockNextResponse({ type: 'text', text: 'Compacted summary.' });
+    await ctx.rpc.beginCompaction({});
+    await completed;
+
+    expect(JSON.stringify(ctx.compactHistory())).not.toContain('Legacy task');
+    expect(JSON.stringify(ctx.lastLlmInput())).not.toContain('live TODO list');
     await ctx.expectResumeMatches();
   });
 });

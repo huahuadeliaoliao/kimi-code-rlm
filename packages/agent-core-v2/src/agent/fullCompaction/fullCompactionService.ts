@@ -20,10 +20,15 @@ import { isAbortError } from '#/_base/utils/abort';
 import { IAgentProfileService, type ProfileModelContext } from '#/agent/profile/profile';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
+import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { stripDynamicToolContext } from '#/agent/toolSelect/dynamicTools';
 import { IAgentToolSelectService } from '#/agent/toolSelect/toolSelect';
 import { ISessionTodoService } from '#/session/todo/sessionTodo';
-import { renderTodoList, type TodoItem } from '#/session/todo/todoItem';
+import {
+  TODO_LIST_TOOL_NAME,
+  renderTodoList,
+  type TodoItem,
+} from '#/session/todo/todoItem';
 import {
   APIContextOverflowError,
   APIEmptyResponseError,
@@ -40,6 +45,7 @@ import { ErrorCodes, Error2, isCodedError, isError2, toKimiErrorPayload, unwrapE
 import { AgentErrorEvent } from '#/agent/mcp/mcpEvents';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import compactionInstructionTemplate from './compaction-instruction.md?raw';
+import compactionSystemTemplate from './compaction-system.md?raw';
 import {
   IAgentFullCompactionService,
   type FullCompactionInput,
@@ -67,6 +73,9 @@ import { OrderedHookSlot } from '#/hooks';
 
 export const MAX_COMPACTION_RETRY_ATTEMPTS = 5;
 const DEFAULT_COMPACTION_MAX_COMPLETION_TOKENS = 128 * 1024;
+const COMPACTION_SYSTEM_PROMPT = compactionSystemTemplate.trim();
+const TODO_HANDOFF_GUIDANCE =
+  'The live TODO list is re-attached automatically below this note, so do not transcribe it. Record only reasoning that the list cannot represent, such as why an item changed or a decision that constrains another task.';
 const OVERFLOW_CONTEXT_SAFETY_RATIO = 0.85;
 const OVERFLOW_STATUS_RECOVERY_RATIO = 0.5;
 const MAX_COMPACTION_OVERFLOW_SHRINK_ATTEMPTS = 3;
@@ -140,6 +149,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     @IAgentProfileService private readonly profile: IAgentProfileService,
     @IAgentToolRegistryService private readonly toolRegistry: IAgentToolRegistryService,
     @IAgentToolSelectService private readonly toolSelect: IAgentToolSelectService,
+    @IAgentToolPolicyService private readonly toolPolicy: IAgentToolPolicyService,
     @ISessionTodoService private readonly todo: ISessionTodoService,
     @ITelemetryService private readonly telemetry: ITelemetryService,
     @IEventDispatcher private readonly dispatcher: IEventDispatcher,
@@ -277,6 +287,14 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     return this.tokenCounting.requestSize({
       systemPrompt: this.profile.getSystemPrompt(),
       tools: this.defaultTools().filter((tool) => tool.deferred !== true),
+      messages,
+    });
+  }
+
+  private compactionRequestTokens(messages: readonly Message[]): number {
+    return this.tokenCounting.requestSize({
+      systemPrompt: COMPACTION_SYSTEM_PROMPT,
+      tools: [],
       messages,
     });
   }
@@ -631,6 +649,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       const instruction = renderPrompt(compactionInstructionTemplate, {
         custom_instruction_block:
           customInstruction.length > 0 ? `\nOptional user instruction:\n${customInstruction}\n` : '',
+        todo_handoff_guidance: this.isTodoActive() ? TODO_HANDOFF_GUIDANCE : '',
       }).trimEnd();
 
       const delays = retryBackoffDelays(MAX_COMPACTION_RETRY_ATTEMPTS);
@@ -642,12 +661,14 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       while (true) {
         const messagesToCompact = historyForModel;
         const messages: Message[] = [...messagesToCompact, createUserMessage(instruction)];
-        const estimatedCompactionRequestTokens = this.requestTokens(messages);
+        const estimatedCompactionRequestTokens = this.compactionRequestTokens(messages);
 
         try {
           const request = this.llmRequester.start(
             {
               messages,
+              tools: [],
+              systemPrompt: COMPACTION_SYSTEM_PROMPT,
               maxOutputSize: compactionMaxOutputSize,
               source: {
                 type: 'operation',
@@ -777,7 +798,12 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     }
   }
 
+  private isTodoActive(): boolean {
+    return this.toolPolicy.isToolActive(TODO_LIST_TOOL_NAME, 'builtin');
+  }
+
   private postProcessSummary(summary: string): string {
+    if (!this.isTodoActive()) return summary;
     const todos = this.currentTodos();
     if (todos.length === 0) {
       return summary;

@@ -233,6 +233,7 @@ describe('prepareSystemPromptContext additional directories', () => {
     const agentsMd = result.agentsMd ?? '';
 
     expect(result.cwdListing).toBeTypeOf('string');
+    expect(result.additionalDirs).toEqual([extraDir]);
     expect(result.additionalDirsInfo).toContain(`### ${extraDir}`);
     expect(result.additionalDirsInfo).toContain('extra-file.txt');
     expect(agentsMd).toContain('repo project instructions');

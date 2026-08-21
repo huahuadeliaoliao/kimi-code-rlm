@@ -3,9 +3,7 @@ import {
   Error2,
   IAgentGoalService,
   IAgentLifecycleService,
-  IAgentPlanService,
   IAgentProfileService,
-  IAgentSwarmService,
   resumeSessionById,
   type PermissionMode,
   type Scope,
@@ -19,6 +17,18 @@ export async function applySessionAgentConfig(
   sessionId: string,
   agentConfig: SessionAgentConfigPartial,
 ): Promise<void> {
+  if (agentConfig.plan_mode === true) {
+    throw new Error2(
+      ErrorCodes.SESSION_PLAN_MODE_INVALID,
+      'Plan mode is disabled in this local RLM build.',
+    );
+  }
+  if (agentConfig.swarm_mode === true) {
+    throw new Error2(
+      ErrorCodes.REQUEST_INVALID,
+      'Swarm mode is disabled in this local single-agent RLM build.',
+    );
+  }
   const session = await resumeSessionById(core.accessor, sessionId);
   if (session === undefined) {
     throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${sessionId} does not exist`);
@@ -36,21 +46,6 @@ export async function applySessionAgentConfig(
     agent.accessor
       .get(IAgentLifecycleService)
       .broadcastPermissionMode(agentConfig.permission_mode as PermissionMode);
-  }
-  if (agentConfig.plan_mode !== undefined) {
-    const plan = agent.accessor.get(IAgentPlanService);
-    const active = (await plan.status()) !== null;
-    if (active !== agentConfig.plan_mode) {
-      if (agentConfig.plan_mode) await plan.enter();
-      else plan.exit();
-    }
-  }
-  if (agentConfig.swarm_mode !== undefined) {
-    const swarm = agent.accessor.get(IAgentSwarmService);
-    if (swarm.isActive !== agentConfig.swarm_mode) {
-      if (agentConfig.swarm_mode) swarm.enter('manual');
-      else swarm.exit();
-    }
   }
   if (agentConfig.goal_objective !== undefined) {
     await agent.accessor.get(IAgentGoalService).createGoal({ objective: agentConfig.goal_objective });

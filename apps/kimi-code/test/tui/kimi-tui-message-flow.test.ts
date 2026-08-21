@@ -36,6 +36,7 @@ import {
   TRANSCRIPT_KEEP_RECENT_STEPS,
 } from '#/tui/utils/transcript-window';
 import { BtwPanelComponent } from '#/tui/components/panes/btw-panel';
+import type { BtwPanelController } from '#/tui/controllers/btw-panel';
 import { ThinkingComponent } from '#/tui/components/messages/thinking';
 import { WelcomeComponent } from '#/tui/components/chrome/welcome';
 import { ModelSelectorComponent } from '#/tui/components/dialogs/model-selector';
@@ -430,9 +431,10 @@ async function openBtwPanel(
   session: ReturnType<typeof makeSession>,
   prompt = 'side question',
 ): Promise<void> {
-  driver.handleUserInput(`/btw ${prompt}`);
+  (driver as MessageDriver & { readonly btwPanelController: BtwPanelController })
+    .btwPanelController.open('agent-btw', prompt);
   await vi.waitFor(() => {
-    expect(session.startBtw).toHaveBeenCalled();
+    expect(session.prompt).toHaveBeenCalledWith(prompt);
     expect(driver.state.btwPanelContainer.children).toHaveLength(2);
   });
 }
@@ -1526,22 +1528,21 @@ describe('KimiTUI message flow', () => {
       startupInput,
     );
 
-    // The footer shows the config default…
-    expect(driver.state.appState.planMode).toBe(true);
+    expect(driver.state.appState.planMode).toBe(false);
+    expect(driver.state.appState.configDefaultPlanMode).toBe(false);
 
-    // …but the create call must not repeat it: the v2 engine applies
-    // defaultPlanMode at create time, and re-entering plan mode throws.
     driver.handleUserInput('hello');
 
     await vi.waitFor(() => {
       expect(session.prompt).toHaveBeenCalledWith('hello', { promptId: undefined });
     });
-    expect(harness.createSession).toHaveBeenCalledWith(
-      expect.objectContaining({ planMode: undefined }),
+    expect(harness.createSession).toHaveBeenCalledTimes(1);
+    expect(harness.createSession).not.toHaveBeenCalledWith(
+      expect.objectContaining({ planMode: true }),
     );
   });
 
-  it('passes the explicit --plan flag into the lazy-created session (v2 engine)', async () => {
+  it('does not pass the legacy plan flag into a lazy-created session', async () => {
     const session = makeSession({ id: 'ses-lazy' });
     const startupInput: KimiTUIStartupInput = {
       ...makeStartupInput(),
@@ -1555,7 +1556,8 @@ describe('KimiTUI message flow', () => {
     await vi.waitFor(() => {
       expect(session.prompt).toHaveBeenCalledWith('hello', { promptId: undefined });
     });
-    expect(harness.createSession).toHaveBeenCalledWith(
+    expect(harness.createSession).toHaveBeenCalledTimes(1);
+    expect(harness.createSession).not.toHaveBeenCalledWith(
       expect.objectContaining({ planMode: true }),
     );
   });
@@ -1813,47 +1815,6 @@ describe('KimiTUI message flow', () => {
     expect(driver.state.appState.maxContextTokens).toBe(0);
   });
 
-  it('does not re-enter plan mode on /plan on when config already applied it (v2 engine)', async () => {
-    const session = makeSession({
-      id: 'ses-lazy',
-      getStatus: vi.fn(async () => ({
-        model: 'k2',
-        thinkingEffort: 'off',
-        permission: 'manual',
-        planMode: true,
-        contextTokens: 0,
-        maxContextTokens: 100,
-        contextUsage: 0,
-      })),
-    });
-    const startupInput: KimiTUIStartupInput = {
-      ...makeStartupInput(),
-      engineV2: true,
-      cliOptions: { ...makeStartupInput().cliOptions, model: 'k2' },
-    };
-    const { driver, harness } = await makeDriver(
-      session,
-      {
-        getConfig: vi.fn(async () => ({
-          models: { k2: { model: 'moonshot-v1', maxContextSize: 100 } },
-          defaultModel: 'k2',
-          defaultPlanMode: true,
-        })),
-      },
-      startupInput,
-    );
-
-    driver.handleUserInput('/plan on');
-
-    await vi.waitFor(() => {
-      expect(harness.createSession).toHaveBeenCalledTimes(1);
-    });
-    // The engine already applied defaultPlanMode at create; the command must
-    // notice the active plan mode instead of re-entering (which would throw).
-    expect(session.setPlanMode).not.toHaveBeenCalled();
-    expect(driver.state.appState.planMode).toBe(true);
-  });
-
   it('clears the stale permission default when it is removed from config (v2 engine)', async () => {
     const homeDir = await makeTempHome();
     process.env['KIMI_CODE_HOME'] = homeDir;
@@ -1890,15 +1851,14 @@ describe('KimiTUI message flow', () => {
     });
   });
 
-  it('does not pass --plan when config already applies default plan mode (v2 engine)', async () => {
+  it('ignores legacy plan flag and config defaults during session creation', async () => {
     const session = makeSession({
       id: 'ses-lazy',
-      // The engine applied the config default at create.
       getStatus: vi.fn(async () => ({
         model: 'k2',
         thinkingEffort: 'off',
         permission: 'manual',
-        planMode: true,
+        planMode: false,
         contextTokens: 0,
         maxContextTokens: 100,
         contextUsage: 0,
@@ -1926,12 +1886,11 @@ describe('KimiTUI message flow', () => {
     await vi.waitFor(() => {
       expect(session.prompt).toHaveBeenCalledWith('hello', { promptId: undefined });
     });
-    // The engine applies the config default at create; repeating --plan would
-    // re-enter plan mode and throw, so it must not be passed again.
-    expect(harness.createSession).toHaveBeenCalledWith(
-      expect.objectContaining({ planMode: undefined }),
+    expect(harness.createSession).toHaveBeenCalledTimes(1);
+    expect(harness.createSession).not.toHaveBeenCalledWith(
+      expect.objectContaining({ planMode: true }),
     );
-    expect(driver.state.appState.planMode).toBe(true);
+    expect(driver.state.appState.planMode).toBe(false);
   });
 
   it('opens read-only status commands without creating a session (v2 engine)', async () => {
@@ -2527,24 +2486,10 @@ command = "vim"
     }
   });
 
-  it('does not re-enter plan mode after creating a plan-mode session', async () => {
-    const session = makeSession({
-      getStatus: vi.fn(async () => ({
-        model: 'k2',
-        thinkingEffort: 'off',
-        permission: 'manual',
-        planMode: true,
-        contextTokens: 0,
-        maxContextTokens: 100,
-        contextUsage: 0,
-      })),
-      setPlanMode: vi.fn(async () => {
-        throw new Error('Already in plan mode');
-      }),
-    });
+  it('creates replacement sessions without carrying legacy plan state', async () => {
+    const session = makeSession();
     const { driver, harness } = await makeDriver(session);
     harness.createSession.mockClear();
-    session.setPlanMode.mockClear();
     driver.state.appState.planMode = true;
 
     driver.handleUserInput('/new');
@@ -2555,11 +2500,9 @@ command = "vim"
         model: 'k2',
         thinking: 'off',
         permission: 'manual',
-        planMode: true,
       });
     });
     expect(session.setPlanMode).not.toHaveBeenCalled();
-    expect(stripSgr(renderTranscript(driver))).not.toContain('Post-create setup failed');
   });
 
   it('keeps the new session subscribed when post-create setup fails', async () => {
@@ -2587,17 +2530,13 @@ command = "vim"
     expect(failedSession.onEvent).toHaveBeenCalledOnce();
   });
 
-  it('tracks Shift-Tab mode switches through the editor handler', async () => {
+  it('does not install a Shift-Tab plan-mode handler', async () => {
     const { driver, session, harness } = await makeDriver();
     harness.track.mockClear();
 
-    driver.state.editor.onShiftTab?.();
-
-    await vi.waitFor(() => {
-      expect(session.setPlanMode).toHaveBeenCalledWith(true);
-    });
-    expect(harness.track).toHaveBeenCalledWith('shortcut_plan_toggle', { enabled: true });
-    expect(harness.track).toHaveBeenCalledWith('shortcut_mode_switch', { to_mode: 'plan' });
+    expect(driver.state.editor.onShiftTab).toBeUndefined();
+    expect(session.setPlanMode).not.toHaveBeenCalled();
+    expect(harness.track).not.toHaveBeenCalledWith('shortcut_plan_toggle', expect.anything());
   });
 
   it('routes /yolo through session permission state without app-layer telemetry duplication', async () => {
@@ -4570,213 +4509,29 @@ command = "vim"
     expect(harness.track).toHaveBeenCalledWith('init_complete', undefined);
   });
 
-  it('starts /btw through a forked side agent without changing the main busy state', async () => {
+  it('rejects /btw without creating or prompting a side agent', async () => {
     const session = makeSession();
-    const { driver, harness } = await makeDriver(session);
-    harness.track.mockClear();
+    const { driver } = await makeDriver(session);
     driver.state.appState.streamingPhase = 'composing';
     driver.state.livePane.mode = 'thinking';
 
     driver.handleUserInput('/btw What are you working on right now?');
 
-    await vi.waitFor(() => {
-      expect(session.startBtw).toHaveBeenCalledWith();
-    });
-    await vi.waitFor(() => {
-      expect(session.prompt).toHaveBeenCalledWith('What are you working on right now?');
-    });
-    expect(session.steer).not.toHaveBeenCalled();
+    expect(session.startBtw).not.toHaveBeenCalled();
+    expect(session.prompt).not.toHaveBeenCalled();
     expect(driver.state.appState.streamingPhase).toBe('composing');
     expect(driver.state.livePane.mode).toBe('thinking');
-    expect(harness.track).toHaveBeenCalledWith('input_command', { command: 'btw' });
-  });
-
-  it('opens /btw without a question and sends the first panel input to a side agent', async () => {
-    const session = makeSession();
-    const { driver } = await makeDriver(session);
-
-    driver.handleUserInput('/btw');
-
-    await vi.waitFor(() => {
-      expect(session.startBtw).toHaveBeenCalledWith();
-    });
-    expect(session.prompt).not.toHaveBeenCalled();
-    expect(stripSgr(renderBtwPanel(driver))).toContain('Ready for a side question...');
-
-    driver.handleUserInput('What are you working on right now?');
-
-    await vi.waitFor(() => {
-      expect(session.prompt).toHaveBeenCalledWith('What are you working on right now?');
-    });
-    expect(session.steer).not.toHaveBeenCalled();
-    expect(stripSgr(renderBtwPanel(driver))).toContain('Q: What are you working on right now?');
-  });
-
-  it('sends /btw panel input with inline skills via promptWithSkills (v2 engine)', async () => {
-    const session = makeSession({
-      id: 'ses-lazy',
-      listSkills: vi.fn(async () => [
-        { name: 'review', description: 'Review skill', path: '/tmp/review', source: 'user' },
-      ]),
-    });
-    const startupInput: KimiTUIStartupInput = {
-      ...makeStartupInput(),
-      engineV2: true,
-      cliOptions: { ...makeStartupInput().cliOptions, model: 'k2' },
-    };
-    const { driver } = await makeDriver(
-      session,
-      {
-        listWorkspaceSkills: vi.fn(async () => [
-          { name: 'review', description: 'Review skill', path: '/tmp/review', source: 'user' },
-        ]),
-        listPluginCommands: vi.fn(async () => []),
-      },
-      startupInput,
+    expect(stripSgr(renderTranscript(driver))).toContain(
+      'Side questions are disabled in this local single-agent RLM build.',
     );
-    await (
-      driver as unknown as { refreshSkillCommands(): Promise<void> }
-    ).refreshSkillCommands();
-
-    driver.handleUserInput('/btw');
-    await vi.waitFor(() => {
-      expect(session.startBtw).toHaveBeenCalledWith();
-    });
-    expect(stripSgr(renderBtwPanel(driver))).toContain('Ready for a side question...');
-
-    driver.handleUserInput('check /skill:review');
-
-    await vi.waitFor(() => {
-      expect(session.promptWithSkills).toHaveBeenCalledWith('check /skill:review', [
-        { name: 'review' },
-      ]);
-    });
-    expect(session.prompt).not.toHaveBeenCalled();
-  });
-
-  it('activates inline skills in the initial /btw prompt (v2 engine)', async () => {
-    const session = makeSession({
-      id: 'ses-lazy',
-      listSkills: vi.fn(async () => [
-        { name: 'review', description: 'Review skill', path: '/tmp/review', source: 'user' },
-      ]),
-    });
-    const startupInput: KimiTUIStartupInput = {
-      ...makeStartupInput(),
-      engineV2: true,
-      cliOptions: { ...makeStartupInput().cliOptions, model: 'k2' },
-    };
-    const { driver } = await makeDriver(
-      session,
-      {
-        listWorkspaceSkills: vi.fn(async () => [
-          { name: 'review', description: 'Review skill', path: '/tmp/review', source: 'user' },
-        ]),
-        listPluginCommands: vi.fn(async () => []),
-      },
-      startupInput,
-    );
-    await (
-      driver as unknown as { refreshSkillCommands(): Promise<void> }
-    ).refreshSkillCommands();
-
-    driver.handleUserInput('/btw check this /skill:review');
-
-    await vi.waitFor(() => {
-      expect(session.promptWithSkills).toHaveBeenCalledWith('check this /skill:review', [
-        { name: 'review' },
-      ]);
-    });
-    expect(session.prompt).not.toHaveBeenCalled();
-  });
-
-  it('activates a leading skill token in the initial /btw prompt (v2 engine)', async () => {
-    const session = makeSession({
-      id: 'ses-lazy',
-      listSkills: vi.fn(async () => [
-        { name: 'review', description: 'Review skill', path: '/tmp/review', source: 'user' },
-      ]),
-    });
-    const startupInput: KimiTUIStartupInput = {
-      ...makeStartupInput(),
-      engineV2: true,
-      cliOptions: { ...makeStartupInput().cliOptions, model: 'k2' },
-    };
-    const { driver } = await makeDriver(
-      session,
-      {
-        listWorkspaceSkills: vi.fn(async () => [
-          { name: 'review', description: 'Review skill', path: '/tmp/review', source: 'user' },
-        ]),
-        listPluginCommands: vi.fn(async () => []),
-      },
-      startupInput,
-    );
-    await (
-      driver as unknown as { refreshSkillCommands(): Promise<void> }
-    ).refreshSkillCommands();
-
-    driver.handleUserInput('/btw /skill:review check this');
-
-    await vi.waitFor(() => {
-      expect(session.promptWithSkills).toHaveBeenCalledWith('/skill:review check this', [
-        { name: 'review' },
-      ]);
-    });
-    expect(session.prompt).not.toHaveBeenCalled();
-  });
-
-  it('keeps /btw as the leading command when its prompt mentions multiple skills (v2 engine)', async () => {
-    const session = makeSession({
-      id: 'ses-lazy',
-      listSkills: vi.fn(async () => [
-        { name: 'review', description: 'Review skill', path: '/tmp/review', source: 'user' },
-        { name: 'security', description: 'Security skill', path: '/tmp/security', source: 'user' },
-      ]),
-    });
-    const startupInput: KimiTUIStartupInput = {
-      ...makeStartupInput(),
-      engineV2: true,
-      cliOptions: { ...makeStartupInput().cliOptions, model: 'k2' },
-    };
-    const { driver } = await makeDriver(
-      session,
-      {
-        listWorkspaceSkills: vi.fn(async () => [
-          { name: 'review', description: 'Review skill', path: '/tmp/review', source: 'user' },
-          { name: 'security', description: 'Security skill', path: '/tmp/security', source: 'user' },
-        ]),
-        listPluginCommands: vi.fn(async () => []),
-      },
-      startupInput,
-    );
-    await (
-      driver as unknown as { refreshSkillCommands(): Promise<void> }
-    ).refreshSkillCommands();
-
-    driver.handleUserInput('/btw check /skill:review /skill:security');
-
-    await vi.waitFor(() => {
-      expect(session.startBtw).toHaveBeenCalledWith();
-    });
-    await vi.waitFor(() => {
-      expect(session.promptWithSkills).toHaveBeenCalledWith('check /skill:review /skill:security', [
-        { name: 'review' },
-        { name: 'security' },
-      ]);
-    });
-    expect(session.prompt).not.toHaveBeenCalled();
   });
 
   it('cancels an unused /btw side agent when closing an empty panel', async () => {
     const session = makeSession();
     const { driver } = await makeDriver(session);
 
-    driver.handleUserInput('/btw');
-
-    await vi.waitFor(() => {
-      expect(session.startBtw).toHaveBeenCalledWith();
-    });
+    (driver as MessageDriver & { readonly btwPanelController: BtwPanelController })
+      .btwPanelController.open('agent-btw', '');
     driver.state.editor.onEscape?.();
 
     expect(session.cancel).toHaveBeenCalledOnce();
@@ -5286,71 +5041,23 @@ command = "vim"
     resolveBtwPrompt?.();
   });
 
-  it('replaces a running /btw panel when another /btw command is submitted', async () => {
-    const session = makeSession({
-      startBtw: vi.fn()
-        .mockResolvedValueOnce('agent-btw-1')
-        .mockResolvedValueOnce('agent-btw-2'),
-    });
-    const { driver } = await makeDriver(session);
-    await openBtwPanel(driver, session, 'first question');
-
-    const firstPanel = getMountedBtwPanel(driver);
-    expect(firstPanel.isRunning()).toBe(true);
-
-    driver.handleUserInput('/btw second question');
-
-    await vi.waitFor(() => {
-      expect(session.startBtw).toHaveBeenCalledTimes(2);
-    });
-    await vi.waitFor(() => {
-      expect(session.prompt).toHaveBeenCalledWith('second question');
-    });
-
-    const secondPanel = getMountedBtwPanel(driver);
-    expect(secondPanel).not.toBe(firstPanel);
-    expect(session.cancel).toHaveBeenCalledTimes(1);
-    expect(session.prompt).toHaveBeenCalledTimes(2);
-
-    driver.sessionEventHandler.handleEvent(
-      {
-        type: 'assistant.delta',
-        agentId: 'agent-btw-1',
-        sessionId: 'ses-1',
-        turnId: 0,
-        delta: 'answer from old side agent',
-      } as Event,
-      () => {},
-    );
-    driver.sessionEventHandler.handleEvent(
-      {
-        type: 'assistant.delta',
-        agentId: 'agent-btw-2',
-        sessionId: 'ses-1',
-        turnId: 1,
-        delta: 'answer from new side agent',
-      } as Event,
-      () => {},
-    );
-
-    const renderedPanel = stripSgr(renderBtwPanel(driver));
-    expect(renderedPanel).not.toContain('answer from old side agent');
-    expect(renderedPanel).toContain('answer from new side agent');
-  });
-
-  it('does not run /btw without a selected model', async () => {
+  it('reports /btw as disabled even without a selected model', async () => {
     const { driver, session } = await makeDriver();
 
     driver.state.appState.model = '';
     driver.handleUserInput('/btw');
     expect(session.startBtw).not.toHaveBeenCalled();
     expect(driver.state.btwPanelContainer.children).toHaveLength(0);
-    expect(stripSgr(renderTranscript(driver))).toContain('LLM not set');
+    expect(stripSgr(renderTranscript(driver))).toContain(
+      'Side questions are disabled in this local single-agent RLM build.',
+    );
 
     driver.handleUserInput('/btw What are you doing now?');
 
     expect(session.startBtw).not.toHaveBeenCalled();
-    expect(stripSgr(renderTranscript(driver))).toContain('LLM not set');
+    expect(stripSgr(renderTranscript(driver))).toContain(
+      'Side questions are disabled in this local single-agent RLM build.',
+    );
   });
 
   it('applies the effective thinking effort from status updates', async () => {
@@ -5408,39 +5115,6 @@ command = "vim"
     expect(countOccurrences(transcript, 'Swarm activated')).toBe(0);
     expect(countOccurrences(transcript, 'Swarm deactivated')).toBe(0);
     expect(countOccurrences(transcript, 'Swarm ended')).toBe(0);
-  });
-
-  it('renders an ended marker when a one-shot /swarm task exits', async () => {
-    const { driver, session } = await makeDriver(undefined);
-    driver.state.appState.permissionMode = 'auto';
-
-    driver.handleUserInput('/swarm Ship feature X');
-
-    await vi.waitFor(() => {
-      expect(session.setSwarmMode).toHaveBeenCalledWith(true, 'task');
-    });
-    await vi.waitFor(() => {
-      expect(countOccurrences(stripSgr(renderTranscript(driver)), 'Swarm activated')).toBe(1);
-    });
-    let transcript = stripSgr(renderTranscript(driver));
-    expect(countOccurrences(transcript, 'Swarm activated')).toBe(1);
-    expect(transcript).not.toContain('Swarm ended');
-
-    driver.sessionEventHandler.handleEvent(
-      {
-        type: 'agent.status.updated',
-        agentId: 'main',
-        sessionId: 'ses-1',
-        swarmMode: false,
-      } as Event,
-      vi.fn(),
-    );
-
-    expect(driver.state.appState.swarmMode).toBe(false);
-    transcript = stripSgr(renderTranscript(driver));
-    expect(countOccurrences(transcript, 'Swarm activated')).toBe(1);
-    expect(countOccurrences(transcript, 'Swarm ended')).toBe(1);
-    expect(transcript).not.toContain('Swarm deactivated');
   });
 
   it('queues Ctrl-S input instead of steering while /init is running', async () => {
@@ -6407,7 +6081,7 @@ command = "vim"
         model: 'k2',
         thinkingEffort: 'high',
         permission: 'auto',
-        planMode: true,
+        planMode: false,
         contextTokens: 25,
         maxContextTokens: 100,
         contextUsage: 0.25,
@@ -6427,7 +6101,7 @@ command = "vim"
       expect(output).toContain('Model');
       expect(output).toContain('thinking high');
       expect(output).toContain('Permissions  auto');
-      expect(output).toContain('Plan mode    on');
+      expect(output).not.toContain('Plan mode');
       expect(output).toContain('Context window');
       expect(output).toContain('25%');
     });

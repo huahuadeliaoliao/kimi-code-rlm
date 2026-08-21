@@ -237,7 +237,10 @@ export class Session {
 
   async startBtw(): Promise<string> {
     this.ensureOpen();
-    return this.rpc.startBtw({ sessionId: this.id });
+    throw new KimiError(
+      ErrorCodes.REQUEST_INVALID,
+      'Side questions are disabled in this local single-agent RLM build.',
+    );
   }
 
   async cancel(): Promise<void> {
@@ -323,7 +326,11 @@ export class Session {
         'Session plan mode must be a boolean',
       );
     }
-    await this.rpc.setPlanMode({ sessionId: this.id, enabled });
+    if (!enabled) return;
+    throw new KimiError(
+      ErrorCodes.SESSION_PLAN_MODE_INVALID,
+      'Plan mode is disabled in this local RLM build.',
+    );
   }
 
   async setSwarmMode(enabled: boolean, trigger: SwarmModeTrigger): Promise<void> {
@@ -334,11 +341,12 @@ export class Session {
         'Session swarm mode must be a boolean',
       );
     }
-    if (enabled) {
-      await this.rpc.setSwarmMode({ sessionId: this.id, enabled: true, trigger });
-    } else {
-      await this.rpc.setSwarmMode({ sessionId: this.id, enabled: false });
-    }
+    if (!enabled) return;
+    void trigger;
+    throw new KimiError(
+      ErrorCodes.REQUEST_INVALID,
+      'Swarm mode is disabled in this local single-agent RLM build.',
+    );
   }
 
   async getPlan(): Promise<SessionPlan> {

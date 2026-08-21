@@ -113,7 +113,7 @@ export function createProgram(
     )
     .addOption(new Option('--yes').hideHelp().default(false))
     .addOption(new Option('--auto-approve').hideHelp().default(false))
-    .option('--plan', 'Start in plan mode.', false);
+    .addOption(new Option('--plan').hideHelp().default(false));
 
   registerExportCommand(program);
   registerProviderCommand(program);

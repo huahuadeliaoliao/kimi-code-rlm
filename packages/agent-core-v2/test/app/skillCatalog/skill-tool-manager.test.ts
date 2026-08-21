@@ -149,7 +149,7 @@ describe('ToolManager SkillTool registration with inline skills', () => {
     expect(skillInfo).toMatchObject({ name: 'Skill', active: true, source: 'builtin' });
     expect(skillTool).toMatchObject({
       name: 'Skill',
-      description: expect.stringContaining('Invoke a registered skill'),
+      description: expect.stringContaining('Load instructions for a skill'),
     });
   });
 });

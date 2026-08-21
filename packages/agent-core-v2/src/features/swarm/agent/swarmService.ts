@@ -3,6 +3,7 @@ import { IInstantiationService } from '#/_base/di/instantiation';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { TurnEnded } from '#/agent/loop/turnOps';
 import { IAgentToolApprovalService } from '#/agent/toolApproval/toolApproval';
+import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { denyToolExecution } from '#/agent/toolExecutor/beforeToolExecuteEvent';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import { IEventBus } from '#/app/event/eventBus';
@@ -22,6 +23,7 @@ export class AgentSwarmService extends Service implements IAgentSwarmService {
     @IEventBus eventBus: IEventBus,
     @IAgentContextMemoryService private readonly context: IAgentContextMemoryService,
     @IAgentToolApprovalService private readonly toolApproval: IAgentToolApprovalService,
+    @IAgentToolPolicyService private readonly toolPolicy: IAgentToolPolicyService,
     @IAgentToolExecutorService toolExecutor: IAgentToolExecutorService,
     @IAgentStateService private readonly agentState: IAgentStateService,
   ) {
@@ -30,6 +32,7 @@ export class AgentSwarmService extends Service implements IAgentSwarmService {
     this._register(
       instantiation.createInstance(SwarmInjection, {
         getTrigger: () => this.agentState.get(swarmKey),
+        isEnabled: () => this.isEnabled,
       }),
     );
     this._register(
@@ -61,7 +64,7 @@ export class AgentSwarmService extends Service implements IAgentSwarmService {
   }
 
   enter(trigger: SwarmModeTrigger): void {
-    if (this.agentState.get(swarmKey) !== null) return;
+    if (!this.isEnabled || this.agentState.get(swarmKey) !== null) return;
     void this.dispatcher.dispatch(new SwarmModeEnter({ trigger }));
   }
 
@@ -74,6 +77,10 @@ export class AgentSwarmService extends Service implements IAgentSwarmService {
 
   get isActive(): boolean {
     return this.agentState.get(swarmKey) !== null;
+  }
+
+  private get isEnabled(): boolean {
+    return this.toolPolicy.isToolActive('AgentSwarm');
   }
 
   private get shouldAutoExit(): boolean {

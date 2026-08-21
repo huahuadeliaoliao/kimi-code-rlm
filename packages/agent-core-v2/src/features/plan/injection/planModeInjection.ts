@@ -22,6 +22,7 @@ export const planWasActiveKey = defineState<boolean>('plan.wasActive', () => fal
 
 export class PlanModeInjection extends Service {
   constructor(
+    private readonly isEnabled: () => boolean,
     @IAgentContextInjectorService injector: IAgentContextInjectorService,
     @IAgentPlanService private readonly plan: IAgentPlanService,
     @IAgentContextMemoryService private readonly context: IAgentContextMemoryService,
@@ -32,6 +33,10 @@ export class PlanModeInjection extends Service {
 
     this._register(
       injector.register(PLAN_MODE_INJECTION_VARIANT, async ({ lastInjectedAt: injectedAt }) => {
+        if (!this.isEnabled()) {
+          this.states.set(planWasActiveKey, false);
+          return undefined;
+        }
         const data = await this.plan.status();
         if (data === null) {
           if (!this.states.get(planWasActiveKey)) return undefined;

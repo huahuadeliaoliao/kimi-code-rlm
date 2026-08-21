@@ -382,7 +382,7 @@ describe('Session.prompt events', () => {
     }
   });
 
-  it('starts btw through RPC as a forked subagent without prompt metadata updates', async () => {
+  it('rejects btw without creating a side agent', async () => {
     const homeDir = await makeTempDir();
     const workDir = await makeTempDir();
     const harness = createKimiHarness({
@@ -393,72 +393,17 @@ describe('Session.prompt events', () => {
     try {
       await configureFakeProvider(harness);
       const session = await harness.createSession({ id: 'ses_btw_rpc', workDir });
-      const events: Event[] = [];
-      const unsubscribe = session.onEvent((event) => {
-        events.push(event);
-      });
 
-      let done = waitForEvent(session, (event) => event.type === 'turn.ended');
-      await session.prompt('main task context');
-      await done;
-
-      fakeProviderState.responseText = 'The main agent is working from the existing context.';
-      events.length = 0;
-      done = waitForEvent(
-        session,
-        (event) => event.type === 'turn.ended' && event.agentId !== 'main',
+      await expect(session.startBtw()).rejects.toThrow(
+        'Side questions are disabled in this local single-agent RLM build.',
       );
-
-      const agentId = await session.startBtw();
-      await harness.withInteractiveAgent(agentId, () =>
-        session.prompt('What are you working on right now?'),
-      );
-      await done;
-      unsubscribe();
       expect(harness.interactiveAgentId).toBe('main');
-
-      const started = events.find(
-        (event) =>
-          event.type === 'turn.started' &&
-          event.agentId === agentId &&
-          event.origin.kind === 'user',
-      );
-      expect(events).toContainEqual(
-        expect.objectContaining({
-          type: 'turn.started',
-          sessionId: session.id,
-          agentId,
-          origin: { kind: 'user' },
-        }),
-      );
-      expect(started?.agentId).not.toBe('main');
-      expect(events).not.toContainEqual(expect.objectContaining({ type: 'subagent.spawned' }));
-      expect(events).not.toContainEqual(expect.objectContaining({ type: 'subagent.completed' }));
-      expect(events).not.toContainEqual(expect.objectContaining({ type: 'subagent.failed' }));
-      expect(events).not.toContainEqual(
-        expect.objectContaining({
-          type: 'session.meta.updated',
-        }),
-      );
-      expect(fakeProviderState.calls[1]?.systemPrompt).toBe(
-        fakeProviderState.calls[0]?.systemPrompt,
-      );
-      const btwHistoryText = JSON.stringify(fakeProviderState.calls[1]?.history);
-      expect(btwHistoryText).toContain('main task context');
-      expect(btwHistoryText).toContain('What are you working on right now?');
+      expect(fakeProviderState.calls).toHaveLength(0);
 
       const statePath = join(session.summary!.sessionDir, 'state.json');
       const state = JSON.parse(await readFile(statePath, 'utf-8')) as Record<string, unknown>;
-      expect(state['lastPrompt']).toBe('main task context');
       expect(state['agents']).toMatchObject({ main: expect.any(Object) });
-      expect(state['agents']).not.toHaveProperty(agentId);
-
-      await harness.closeSession(session.id);
-      const resumed = await harness.resumeSession({ id: session.id });
-      const resumeState = resumed.getResumeState();
-      expect(resumeState?.agents).toMatchObject({ main: expect.any(Object) });
-      expect(resumeState?.agents).not.toHaveProperty(agentId);
-      expect(resumeState?.sessionMetadata.agents).not.toHaveProperty(agentId);
+      expect(Object.keys(state['agents'] as Record<string, unknown>)).toEqual(['main']);
     } finally {
       await harness.close();
     }

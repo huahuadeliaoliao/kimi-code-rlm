@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { sliceMainRecordsAtTurn } from '#/workspace/sessionLifecycle/internal/forkTurnSlice';
+import { isNonPortableSessionRuntimePath } from '#/session/runtimeState/sessionRuntimeState';
 import type { WireRecord } from '#/wire/record';
 
 function userTurnRecord(text: string, time: number): WireRecord {
@@ -16,6 +17,13 @@ function userTurnRecord(text: string, time: number): WireRecord {
 }
 
 describe('sliceMainRecordsAtTurn', () => {
+  it('classifies RLM runtime state as non-portable across forks and exports', () => {
+    expect(isNonPortableSessionRuntimePath('rlm/blobs/value.bin')).toBe(true);
+    expect(isNonPortableSessionRuntimePath('agents/main/rlm/checkpoint.json')).toBe(true);
+    expect(isNonPortableSessionRuntimePath('agents/main/wire.jsonl')).toBe(false);
+    expect(isNonPortableSessionRuntimePath('state.json')).toBe(false);
+  });
+
   it('keeps cron records that fall inside a truncated fork slice', () => {
     const records: WireRecord[] = [
       { type: 'metadata', protocol_version: '1.5', created_at: 1 },

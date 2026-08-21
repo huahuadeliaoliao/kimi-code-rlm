@@ -14,7 +14,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { getLiveSessionById, IAgentLifecycleService, IEventBus } from '@moonshot-ai/agent-core-v2';
+import {
+  getLiveSessionById,
+  IAgentLifecycleService,
+  IAgentProfileService,
+  IAgentToolActivationService,
+  IEventBus,
+  ISessionAgentProfileCatalog,
+} from '@moonshot-ai/agent-core-v2';
 import { ToolProgress } from '@moonshot-ai/agent-core-v2/agent/toolExecutor/toolExecutorEvents';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -55,6 +62,18 @@ describe('acp-server real prompt turn (scripted LLM)', () => {
     c.onRequest('terminal/wait_for_exit', () => ({ exitCode: 0, signal: null }));
     c.onRequest('terminal/kill', () => ({}));
     c.onRequest('terminal/release', () => ({}));
+  }
+
+  async function activateCompatibilityTool(
+    c: TestClient,
+    sessionId: string,
+    name: string,
+  ): Promise<void> {
+    const session = getLiveSessionById(c.server.core.accessor, sessionId);
+    const main = session?.accessor.get(IAgentLifecycleService).get('main');
+    if (main === undefined) throw new Error('main agent unavailable');
+    main.accessor.get(IAgentProfileService).addActiveTool(name);
+    await main.accessor.get(IAgentToolActivationService).activate();
   }
 
   async function boot(clientCapabilities: Record<string, unknown> = {}): Promise<TestClient> {
@@ -129,6 +148,7 @@ describe('acp-server real prompt turn (scripted LLM)', () => {
       sessionId: string;
     };
     await c.waitForSessionUpdate('available_commands_update', 10_000);
+    await activateCompatibilityTool(c, created.sessionId, 'Bash');
 
     const promptPromise = c.send('session/prompt', {
       sessionId: created.sessionId,
@@ -208,6 +228,7 @@ describe('acp-server real prompt turn (scripted LLM)', () => {
       sessionId: string;
     };
     await c.waitForSessionUpdate('available_commands_update', 10_000);
+    await activateCompatibilityTool(c, created.sessionId, 'AskUserQuestion');
 
     const result = (await c.send('session/prompt', {
       sessionId: created.sessionId,
@@ -267,6 +288,7 @@ describe('acp-server real prompt turn (scripted LLM)', () => {
       sessionId: string;
     };
     await c.waitForSessionUpdate('available_commands_update', 10_000);
+    await activateCompatibilityTool(c, created.sessionId, 'Bash');
 
     const firstPrompt = c.send('session/prompt', {
       sessionId: created.sessionId,
@@ -311,6 +333,7 @@ describe('acp-server real prompt turn (scripted LLM)', () => {
       sessionId: string;
     };
     await c.waitForSessionUpdate('available_commands_update', 10_000);
+    await activateCompatibilityTool(c, created.sessionId, 'Bash');
 
     const promptPromise = c.send('session/prompt', {
       sessionId: created.sessionId,
@@ -346,6 +369,11 @@ describe('acp-server real prompt turn (scripted LLM)', () => {
       sessionId: string;
     };
     await c.waitForSessionUpdate('available_commands_update', 10_000);
+    const session = getLiveSessionById(c.server.core.accessor, created.sessionId);
+    const main = session?.accessor.get(IAgentLifecycleService).get('main');
+    const coder = session?.accessor.get(ISessionAgentProfileCatalog).get('coder');
+    if (main === undefined || coder === undefined) throw new Error('coder profile unavailable');
+    await main.accessor.get(IAgentProfileService).applyProfile(coder);
 
     const promptPromise = c.send('session/prompt', {
       sessionId: created.sessionId,
@@ -422,6 +450,7 @@ describe('acp-server real prompt turn (scripted LLM)', () => {
       sessionId: string;
     };
     await c.waitForSessionUpdate('available_commands_update', 10_000);
+    await activateCompatibilityTool(c, created.sessionId, 'Bash');
 
     const promptPromise = c.send('session/prompt', {
       sessionId: created.sessionId,
@@ -493,6 +522,7 @@ describe('acp-server real prompt turn (scripted LLM)', () => {
       sessionId: string;
     };
     await c.waitForSessionUpdate('available_commands_update', 10_000);
+    await activateCompatibilityTool(c, created.sessionId, 'Bash');
 
     const promptPromise = c.send('session/prompt', {
       sessionId: created.sessionId,
@@ -931,6 +961,11 @@ describe('acp-server terminal reverse-RPC (clientCapabilities.terminal)', () => 
       sessionId: string;
     };
     await c.waitForSessionUpdate('available_commands_update', 10_000);
+    const session = getLiveSessionById(c.server.core.accessor, created.sessionId);
+    const main = session?.accessor.get(IAgentLifecycleService).get('main');
+    if (main === undefined) throw new Error('main agent unavailable');
+    main.accessor.get(IAgentProfileService).addActiveTool('Bash');
+    await main.accessor.get(IAgentToolActivationService).activate();
     const result = (await c.send('session/prompt', {
       sessionId: created.sessionId,
       prompt: [{ type: 'text', text: 'run it' }],

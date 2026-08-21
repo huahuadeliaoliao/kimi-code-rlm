@@ -46,16 +46,6 @@ describe('resolveSlashCommandInput', () => {
       args: 'list',
     });
     expect(resolve('/init')).toMatchObject({ kind: 'builtin', name: 'init', args: '' });
-    expect(resolve('/btw')).toMatchObject({
-      kind: 'builtin',
-      name: 'btw',
-      args: '',
-    });
-    expect(resolve('/btw what are you doing?')).toMatchObject({
-      kind: 'builtin',
-      name: 'btw',
-      args: 'what are you doing?',
-    });
     expect(resolve('/experiments')).toMatchObject({
       kind: 'builtin',
       name: 'experiments',
@@ -104,16 +94,6 @@ describe('resolveSlashCommandInput', () => {
       commandName: 'experiments',
       reason: 'streaming',
     });
-    expect(resolve('/swarm on', { isStreaming: true })).toEqual({
-      kind: 'blocked',
-      commandName: 'swarm',
-      reason: 'streaming',
-    });
-    expect(resolve('/swarm off', { isStreaming: true })).toEqual({
-      kind: 'blocked',
-      commandName: 'swarm',
-      reason: 'streaming',
-    });
   });
 
   it('blocks model and session pickers while compacting', () => {
@@ -142,24 +122,9 @@ describe('resolveSlashCommandInput', () => {
       commandName: 'experiments',
       reason: 'compacting',
     });
-    expect(resolve('/swarm on', { isCompacting: true })).toEqual({
-      kind: 'blocked',
-      commandName: 'swarm',
-      reason: 'compacting',
-    });
-    expect(resolve('/swarm off', { isCompacting: true })).toEqual({
-      kind: 'blocked',
-      commandName: 'swarm',
-      reason: 'compacting',
-    });
   });
 
   it('allows always-available built-ins while streaming', () => {
-    expect(resolve('/plan on', { isStreaming: true })).toMatchObject({
-      kind: 'builtin',
-      name: 'plan',
-      args: 'on',
-    });
     expect(resolve('/mcp', { isStreaming: true })).toMatchObject({
       kind: 'builtin',
       name: 'mcp',
@@ -179,19 +144,6 @@ describe('resolveSlashCommandInput', () => {
       kind: 'builtin',
       name: 'reload-tui',
       args: '',
-    });
-    expect(resolve('/btw side question', { isStreaming: true })).toMatchObject({
-      kind: 'builtin',
-      name: 'btw',
-      args: 'side question',
-    });
-  });
-
-  it('blocks plan clear while compacting because it is idle-only', () => {
-    expect(resolve('/plan clear', { isCompacting: true })).toEqual({
-      kind: 'blocked',
-      commandName: 'plan',
-      reason: 'compacting',
     });
   });
 
@@ -247,11 +199,15 @@ describe('resolveSlashCommandInput', () => {
     });
   });
 
-  it('resolves /swarm without an experimental flag', () => {
-    expect(resolve('/swarm Ship feature X')).toMatchObject({
-      kind: 'builtin',
-      name: 'swarm',
-      args: 'Ship feature X',
+  it('treats removed plan, swarm, and btw commands as ordinary messages', () => {
+    expect(resolve('/plan on')).toEqual({ kind: 'message', input: '/plan on' });
+    expect(resolve('/swarm Ship feature X')).toEqual({
+      kind: 'message',
+      input: '/swarm Ship feature X',
+    });
+    expect(resolve('/btw side question')).toEqual({
+      kind: 'message',
+      input: '/btw side question',
     });
   });
 

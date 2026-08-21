@@ -3,7 +3,11 @@ import { describe, expect, it } from 'vitest';
 import { TestInstantiationService } from '#/_base/di/test';
 import { IConfigService } from '#/app/config/config';
 import { IFlagService } from '#/app/flag/flag';
-import { BUILTIN_SKILLS, visibleBuiltinSkills } from '#/app/skillCatalog/builtin/builtin';
+import {
+  BUILTIN_SKILLS,
+  visibleBuiltinSkills,
+  WRITE_GOAL_SKILL,
+} from '#/app/skillCatalog/builtin/builtin';
 import { BuiltinSkillSource } from '#/app/skillCatalog/builtinSkillSource';
 import { BUILTIN_PRODUCT_SKILLS_SECTION } from '#/app/skillCatalog/configSection';
 
@@ -39,6 +43,12 @@ describe('BuiltinSkillSource product-skill switch', () => {
     expect(BUILTIN_SKILLS.filter((s) => s.productSpecific === true).map((s) => s.name).toSorted())
       .toEqual([...PRODUCT_SKILLS].toSorted());
     expect(NEUTRAL_SKILLS.length).toBeGreaterThan(0);
+  });
+
+  it('keeps write-goal aligned with the local goal tool surface', () => {
+    expect(WRITE_GOAL_SKILL.content).toContain('CreateGoal');
+    expect(WRITE_GOAL_SKILL.content).toContain('observable proof');
+    expect(WRITE_GOAL_SKILL.content).not.toMatch(/AskUserQuestion|SetGoalBudget/);
   });
 
   it('offers every builtin skill when the section is unset', async () => {

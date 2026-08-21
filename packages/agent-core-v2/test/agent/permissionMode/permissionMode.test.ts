@@ -152,7 +152,8 @@ describe('AgentPermissionModeService (wire-backed)', () => {
     svc.setMode('auto');
     const autoReminder = await runRegisteredInjection();
     expect(autoReminder).toContain('Auto permission mode is active');
-    expect(autoReminder).toContain('ExitPlanMode is also approved automatically');
+    expect(autoReminder).toContain("do not treat automatic approval as authority to go beyond the user's request");
+    expect(autoReminder).not.toMatch(/AskUserQuestion|ExitPlanMode/);
     expect(await runRegisteredInjection()).toBeUndefined();
 
     svc.setMode('manual');

@@ -673,7 +673,7 @@ describe('server-v2 /api/v1/sessions', () => {
     expect(body.data.context_tokens).toBe(0);
   });
 
-  it('reflects plan/swarm/permission agent_config in GET /status', async () => {
+  it('rejects plan and swarm agent_config without changing live status', async () => {
     const cwd = home as string;
     const created = await postJson<SessionWire>('/api/v1/sessions', { metadata: { cwd } });
     const id = created.body.data.id;
@@ -686,18 +686,19 @@ describe('server-v2 /api/v1/sessions', () => {
     expect(before.body.data.plan_mode).toBe(false);
     expect(before.body.data.swarm_mode).toBe(false);
 
-    await postJson(`/api/v1/sessions/${id}/profile`, {
+    const rejected = await postJson(`/api/v1/sessions/${id}/profile`, {
       agent_config: { plan_mode: true, swarm_mode: true, permission_mode: 'yolo' },
     });
+    expect(rejected.body.code).not.toBe(0);
 
     const after = await getJson<{
       plan_mode: boolean;
       swarm_mode: boolean;
       permission: string;
     }>(`/api/v1/sessions/${id}/status`);
-    expect(after.body.data.plan_mode).toBe(true);
-    expect(after.body.data.swarm_mode).toBe(true);
-    expect(after.body.data.permission).toBe('yolo');
+    expect(after.body.data.plan_mode).toBe(false);
+    expect(after.body.data.swarm_mode).toBe(false);
+    expect(after.body.data.permission).toBe('manual');
   });
 
   it('returns the current goal via GET /goal', async () => {
@@ -763,6 +764,19 @@ describe('server-v2 /api/v1/sessions', () => {
     } finally {
       await rig.cancel();
     }
+  });
+
+  it('rejects :btw without creating a side agent', async () => {
+    const cwd = home as string;
+    const created = await postJson<SessionWire>('/api/v1/sessions', { metadata: { cwd } });
+    const id = created.body.data.id;
+
+    const result = await postJson<null>(`/api/v1/sessions/${id}:btw`);
+
+    expect(result.body.code).toBe(40001);
+    expect(result.body.msg).toBe(
+      'Side questions are disabled in this local single-agent RLM build.',
+    );
   });
 
   it('archives a session via :archive and reflects archived flag on get', async () => {
@@ -1285,7 +1299,7 @@ describe('server-v2 /api/v1/sessions', () => {
     expect(again.body.code).toBe(0);
   });
 
-  it('guards agent_config.plan_mode so a repeated true does not re-enter', async () => {
+  it('consistently rejects repeated plan-mode enable requests', async () => {
     const cwd = home as string;
     const created = await postJson<SessionWire>('/api/v1/sessions', { metadata: { cwd } });
     const id = created.body.data.id;
@@ -1293,12 +1307,12 @@ describe('server-v2 /api/v1/sessions', () => {
     const first = await postJson<SessionWire>(`/api/v1/sessions/${id}/profile`, {
       agent_config: { plan_mode: true },
     });
-    expect(first.body.code).toBe(0);
+    expect(first.body.code).not.toBe(0);
 
     const again = await postJson<SessionWire>(`/api/v1/sessions/${id}/profile`, {
       agent_config: { plan_mode: true },
     });
-    expect(again.body.code).toBe(0);
+    expect(again.body.code).not.toBe(0);
   });
 
   it('maps goal already_exists from agent_config.goal_objective (40913)', async () => {

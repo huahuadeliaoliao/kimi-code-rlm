@@ -13,6 +13,7 @@ import { PlanModeInjection } from '#/features/plan/injection/planModeInjection';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IAgentToolApprovalService } from '#/agent/toolApproval/toolApproval';
+import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { denyToolExecution } from '#/agent/toolExecutor/beforeToolExecuteEvent';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import type {
@@ -60,6 +61,7 @@ export class AgentPlanService extends Service implements IAgentPlanService {
     @IAgentScopeContext private readonly agentCtx: IAgentScopeContext,
     @IAgentToolExecutorService toolExecutor: IAgentToolExecutorService,
     @IAgentToolApprovalService private readonly toolApproval: IAgentToolApprovalService,
+    @IAgentToolPolicyService private readonly toolPolicy: IAgentToolPolicyService,
     @IAgentPermissionModeService private readonly modeService: IAgentPermissionModeService,
     @ITelemetryService telemetry: ITelemetryService,
     @IAgentStateService private readonly agentState: IAgentStateService,
@@ -84,7 +86,9 @@ export class AgentPlanService extends Service implements IAgentPlanService {
       }),
     );
 
-    this._register(new PlanModeInjection(injector, this, this.context, agentState));
+    this._register(
+      new PlanModeInjection(() => this.isPlanEnabled(), injector, this, this.context, agentState),
+    );
     this._register(this.registerPlanGuard(toolExecutor));
   }
 
@@ -141,6 +145,13 @@ export class AgentPlanService extends Service implements IAgentPlanService {
     }
   }
 
+  private isPlanEnabled(): boolean {
+    return (
+      this.toolPolicy.isToolActive('EnterPlanMode') ||
+      this.toolPolicy.isToolActive('ExitPlanMode')
+    );
+  }
+
   private get isActive(): boolean {
     return this.agentState.get(planKey).active;
   }
@@ -160,6 +171,12 @@ export class AgentPlanService extends Service implements IAgentPlanService {
   }
 
   async enter(id = this.createPlanId(), createFile = false): Promise<void> {
+    if (!this.isPlanEnabled()) {
+      throw new Error2(
+        ErrorCodes.REQUEST_INVALID,
+        'Plan mode is disabled in this local RLM build.',
+      );
+    }
     if (this.isActive) {
       throw new Error2(ErrorCodes.SESSION_PLAN_MODE_INVALID, 'Already in plan mode');
     }

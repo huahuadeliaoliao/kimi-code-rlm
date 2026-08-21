@@ -10,8 +10,6 @@ import {
 } from '#/_base/di/scope';
 import { unwrapErrorCause } from '#/_base/errors/errors';
 import { AsyncEmitter, Emitter, type Event, type IWaitUntil } from '#/_base/event';
-import { DEFAULT_PLAN_MODE_SECTION } from '#/features/plan/configSection';
-import { IAgentPlanService } from '#/features/plan/plan';
 import { LifecycleScope } from '#/app/scopes';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
@@ -29,9 +27,9 @@ import { IHostFileSystem, type HostDirEntry } from '#/os/interface/hostFileSyste
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IAgentLifecycleService, MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
-import { ensureMainAgent } from '#/session/agentLifecycle/mainAgent';
 import { labelsFromAgentMeta } from '#/session/agentLifecycle/subagentMetadata';
 import { ISessionContext, sessionContextSeed } from '#/session/sessionContext/sessionContext';
+import { isNonPortableSessionRuntimePath } from '#/session/runtimeState/sessionRuntimeState';
 import { sessionEphemeralMcpServersSeed } from '#/session/mcp/ephemeralMcpServers';
 import { sessionAgentProfileCatalogSeed } from '#/session/sessionAgentProfileCatalog/agentProfileCatalogSeed';
 import { ISessionMetadata, type SessionMeta } from '#/session/sessionMetadata/sessionMetadata';
@@ -183,16 +181,11 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       .catch(() => undefined);
     const handle = await this.materializeSession({ ...opts, sessionId });
     try {
-      const main =
-        opts.mainAgentBinding === undefined
-          ? undefined
-          : await handle.accessor.get(IAgentLifecycleService).create({
-              agentId: MAIN_AGENT_ID,
-              binding: opts.mainAgentBinding,
-            });
-      if (this.config.get<boolean>(DEFAULT_PLAN_MODE_SECTION) === true) {
-        const planAgent = main ?? (await ensureMainAgent(handle));
-        await planAgent.accessor.get(IAgentPlanService).enter();
+      if (opts.mainAgentBinding !== undefined) {
+        await handle.accessor.get(IAgentLifecycleService).create({
+          agentId: MAIN_AGENT_ID,
+          binding: opts.mainAgentBinding,
+        });
       }
       await this.appendSessionIndexEntry(sessionId, opts.workDir);
     } catch (error) {
@@ -687,7 +680,13 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
   ): Promise<void> {
     for (const entry of entries) {
       const rel = relBase === '' ? entry.name : `${relBase}/${entry.name}`;
-      if (rel === 'state.json' || rel === 'logs' || rel === 'upcoming-goals.json' || entry.name === AGENT_WIRE_RECORD_KEY) {
+      if (
+        rel === 'state.json' ||
+        rel === 'logs' ||
+        rel === 'upcoming-goals.json' ||
+        entry.name === AGENT_WIRE_RECORD_KEY ||
+        isNonPortableSessionRuntimePath(rel)
+      ) {
         continue;
       }
       if (entry.isSymbolicLink === true) continue;

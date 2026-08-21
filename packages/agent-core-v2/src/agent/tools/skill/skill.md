@@ -1,1 +1,3 @@
-Invoke a registered skill from the current skill listing. BLOCKING REQUIREMENT: when a skill from the listing matches the user's request, you MUST call this tool (not free-form text). Do not re-invoke a skill to repeat work already done: if a `<skill-loaded>` block for it with the same `args` is already present in the conversation, follow those instructions directly instead of calling the tool again. Do call the tool again when you need the skill with different arguments — the loaded block was expanded with the earlier `args` and will not reflect new inputs.
+Load instructions for a skill from the current skill listing. When the current request clearly matches a listed skill, call this tool before doing the governed work.
+
+Do not reload a skill when a `<skill-loaded>` block with the same `args` is already present; follow that block directly. Call it again when different arguments are needed because argument expansion is specific to each load.

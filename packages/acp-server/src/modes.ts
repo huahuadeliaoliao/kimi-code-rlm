@@ -1,7 +1,7 @@
 /**
  * ACP session-mode taxonomy.
  *
- * The 4 modes (`default`, `plan`, `auto`, `yolo`) are the locked decision.
+ * The 3 modes (`default`, `auto`, `yolo`) are the local RLM build contract.
  * Every `session/new` and `session/load` response advertises {@link ACP_MODES}
  * as the mode picker plus {@link DEFAULT_MODE_ID} as `currentModeId`, so ACP
  * clients render the dropdown from a single canonical source.
@@ -26,11 +26,6 @@ export const ACP_MODES = [
     description: 'Manual approvals; tools execute normally.',
   },
   {
-    id: 'plan',
-    name: 'Plan',
-    description: 'Read-only planning; no tool execution.',
-  },
-  {
     id: 'auto',
     name: 'Auto',
     description: 'Auto-approve safe operations.',
@@ -45,12 +40,12 @@ export const ACP_MODES = [
 /** Initial `currentModeId` for every freshly created ACP session. */
 export const DEFAULT_MODE_ID = 'default' as const;
 
-/** The four wire-level mode ids understood by this host. */
-export type AcpModeId = 'default' | 'plan' | 'auto' | 'yolo';
+/** The wire-level mode ids understood by this host. */
+export type AcpModeId = 'default' | 'auto' | 'yolo';
 
 /** Narrow an unknown wire string to {@link AcpModeId}. */
 export function isAcpModeId(value: unknown): value is AcpModeId {
-  return value === 'default' || value === 'plan' || value === 'auto' || value === 'yolo';
+  return value === 'default' || value === 'auto' || value === 'yolo';
 }
 
 /**
@@ -73,8 +68,6 @@ export function acpModeToToggles(id: AcpModeId): AcpModeToggles {
   switch (id) {
     case 'default':
       return { plan: false, permission: 'manual' };
-    case 'plan':
-      return { plan: true, permission: 'manual' };
     case 'auto':
       return { plan: false, permission: 'auto' };
     case 'yolo':
