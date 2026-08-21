@@ -175,6 +175,7 @@ function createService(
     }),
     resolveRequestParams: () => ({}),
     getSystemPrompt: () => 'system',
+    getActiveToolNames: () => undefined,
     data: () => ({
       cwd: '',
       modelAlias: 'm',

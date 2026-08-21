@@ -1,7 +1,10 @@
 import type { GoalSnapshot } from '#/agent/goal/types';
 import { Service } from "#/_base/di/service";
 import { renderPrompt } from "#/_base/utils/render-prompt";
-import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
+import {
+  IAgentContextInjectorService,
+  type ContextInjectionResult,
+} from '#/agent/contextInjector/contextInjector';
 import GOAL_ACTIVE_REMINDER from './goal-active-reminder.md?raw';
 import GOAL_BLOCKED_REMINDER from './goal-blocked-reminder.md?raw';
 import GOAL_PAUSED_REMINDER from './goal-paused-reminder.md?raw';
@@ -9,10 +12,16 @@ import GOAL_PAUSED_REMINDER from './goal-paused-reminder.md?raw';
 export interface GoalInjectionOptions {
   readonly getGoal: () => GoalSnapshot | null;
   readonly isWaitForEnabled?: () => boolean;
+  readonly isSetGoalBudgetEnabled?: () => boolean;
+}
+
+export interface GoalInjectionDisclosure {
+  readonly goalId: string;
+  readonly status: GoalSnapshot['status'];
 }
 
 export const GOAL_WAIT_FOR_GUIDANCE =
-  'If you are waiting for background sub-agents or bash tasks to finish, call WaitFor to wait for them inside this turn instead of ending the turn; ending the turn just gets you re-invoked again and again. You can also use the waiting time to do useful parallel work. Either way, make sure every goal turn is productive.';
+  'If you are waiting for background sub-agents or bash tasks to finish, call WaitFor inside this turn rather than stopping for another continuation. You may do other useful work while waiting.';
 
 export class GoalInjection extends Service {
   constructor(
@@ -21,26 +30,37 @@ export class GoalInjection extends Service {
   ) {
     super();
     this._register(
-      injector.register('goal', ({ isNewTurn }) => (isNewTurn ? this.reminder() : undefined)),
+      injector.register<GoalInjectionDisclosure>('goal', ({ isNewTurn }) =>
+        isNewTurn ? this.reminder() : undefined,
+      ),
     );
   }
 
-  private reminder(): string | undefined {
+  private reminder(): ContextInjectionResult<GoalInjectionDisclosure> | undefined {
     const goal = this.options.getGoal();
     if (goal === null) return undefined;
+    let content: string | undefined;
     if (goal.status === 'active') {
-      return buildGoalReminder(goal, this.options.isWaitForEnabled?.() === true);
+      content = buildGoalReminder(
+        goal,
+        this.options.isWaitForEnabled?.() === true,
+        this.options.isSetGoalBudgetEnabled?.() === true,
+      );
+    } else if (goal.status === 'blocked') {
+      content = buildBlockedNote(goal);
+    } else if (goal.status === 'paused') {
+      content = buildPausedNote(goal);
     }
-    if (goal.status === 'blocked') return buildBlockedNote(goal);
-    if (goal.status === 'paused') return buildPausedNote(goal);
-    return undefined;
+    if (content === undefined) return undefined;
+    return {
+      content,
+      disclosure: { goalId: goal.goalId, status: goal.status },
+    };
   }
 }
 
 const BUDGET_GUIDANCE_NEARING =
-  'Budget guidance: you are nearing a budget. Converge on the objective and avoid starting new discretionary work.';
-const BUDGET_GUIDANCE_WITHIN =
-  'Budget guidance: you are within budget. Make steady, focused progress toward the objective.';
+  'A hard budget is nearing its limit. Prioritize required completion criteria and avoid optional scope.';
 
 function buildBlockedNote(goal: GoalSnapshot): string {
   return renderPrompt(GOAL_BLOCKED_REMINDER, {
@@ -58,15 +78,21 @@ function buildPausedNote(goal: GoalSnapshot): string {
   });
 }
 
-function buildGoalReminder(goal: GoalSnapshot, waitForEnabled: boolean): string {
+function buildGoalReminder(
+  goal: GoalSnapshot,
+  waitForEnabled: boolean,
+  setGoalBudgetEnabled: boolean,
+): string {
   const budgets = formatBudgets(goal);
   return renderPrompt(GOAL_ACTIVE_REMINDER, {
     objective: escapeUntrustedText(goal.objective),
     completion_criterion_block: completionCriterionBlock(goal),
-    status: goal.status,
-    progress: `${goal.turnsUsed} continuation turns, ${goal.tokensUsed} tokens, ${formatElapsed(goal.wallClockMs)} elapsed`,
     budgets_block: budgets.length > 0 ? `Budgets: ${budgets}.\n` : '',
-    budget_guidance: isNearingBudget(goal) ? BUDGET_GUIDANCE_NEARING : BUDGET_GUIDANCE_WITHIN,
+    budget_guidance:
+      budgets.length > 0 && isNearingBudget(goal) ? `${BUDGET_GUIDANCE_NEARING}\n` : '',
+    budget_update_guidance: setGoalBudgetEnabled
+      ? 'If the objective or latest request states a clear hard limit that is not already recorded, call SetGoalBudget before further goal work. Do not invent a limit.\n'
+      : '',
     wait_for_guidance: waitForEnabled ? ` ${GOAL_WAIT_FOR_GUIDANCE}` : '',
   });
 }

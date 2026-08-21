@@ -13,7 +13,7 @@ import { isPlainRecord } from '#/_base/utils/canonical-args';
 import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
 import { ContextAppendMessage } from '#/agent/contextMemory/contextEvents';
 import type { ContextMessage, PromptOrigin } from '#/agent/contextMemory/types';
-import { GoalInjection, GOAL_WAIT_FOR_GUIDANCE } from '#/agent/goal/injection/goalInjection';
+import { GoalInjection } from '#/agent/goal/injection/goalInjection';
 import {
   IAgentLoopService,
   type AfterStepContext,
@@ -77,6 +77,8 @@ const MAX_GOAL_OBJECTIVE_LENGTH = 4000;
 
 const MAX_GOAL_COMPLETION_CRITERION_LENGTH = MAX_GOAL_OBJECTIVE_LENGTH;
 
+const DEFAULT_GOAL_WORK_SLICE_STEPS = 32;
+
 const GOAL_CANCELLED_REMINDER = [
   'The user cancelled the current goal.',
   'Ignore earlier active-goal reminders for that goal.',
@@ -121,40 +123,14 @@ const GOAL_STALE_TOOL_RESULT =
   'Goal changed since this turn started; ignored stale goal tool call.';
 
 const GOAL_CONTINUATION_PROMPT = [
-  'Continue working toward the active goal.',
-  'Keep the self-audit brief. Do not explore unrelated interpretations once the goal can be',
-  'decided. If the objective is simple, already answered, impossible, unsafe, or contradictory,',
-  'do not run another goal turn. Explain briefly if useful, then call UpdateGoal with `complete`',
-  'or `blocked` in the same turn. Otherwise, weigh the objective and any completion criteria',
-  'against the work done so far, choose one bounded, useful slice of work, and use the existing',
-  'conversation context and your tools. Do not try to finish a broad goal in one turn unless the',
-  'whole goal is genuinely small. Most goal turns should not call UpdateGoal: after completing a',
-  'useful slice, if material work remains, end the turn normally without calling UpdateGoal so',
-  'the runtime can continue the goal in the next turn. Call UpdateGoal with `complete` only when',
-  'all required work is done, any stated validation has passed, and there is no useful next',
-  'action. Completion audit: before calling `complete`, verify the current state against the',
-  'actual objective and every explicit requirement. Treat weak or indirect evidence as not',
-  'complete. Do not mark complete after only producing a plan, summary, first pass, or partial',
-  'result. Do not mark complete merely because a budget is nearly exhausted or you want to stop.',
-  'Blocked audit: do not call UpdateGoal with `blocked` the first time you hit a blocker. Use',
-  '`blocked` only for a genuine impasse: an external condition, required user input, missing',
-  'credentials or permissions, or a persistent technical failure. For those non-terminal',
-  'blockers, the same blocking condition must repeat for at least 3 consecutive goal turns before',
-  'you call `blocked`, counting the original/user-triggered turn and automatic continuations.',
-  'If a previously blocked goal is resumed, treat the resumed run as a fresh blocked audit.',
-  'Exception: if the objective itself is impossible, unsafe, or contradictory, call UpdateGoal',
-  'with `blocked` in the same turn; do not run more goal turns just to satisfy the audit. Do not',
-  'use `blocked` because the work is large, hard, slow, uncertain, incomplete, still needs',
-  'validation, would benefit from clarification, or needs more goal turns. Once the 3-turn',
-  'threshold is met and you cannot make meaningful progress without user input or an',
-  'external-state change, call UpdateGoal with `blocked`; do not keep reporting the blocker while',
-  'leaving the goal active. Do not ask the user for input unless a real blocker prevents progress.',
+  'Continue the active goal from the existing context.',
+  'Resume useful work directly. Do not recap prior turns or emit a progress update.',
+  'Follow the active-goal reminder in this turn for completion, blocking, and budget rules.',
 ].join(' ');
 
-const GOAL_STEP_CAP_CONTINUATION_PROMPT = [
-  'The previous goal turn reached the per-turn step limit before finishing its work,',
-  'so a new turn was started for you. Pick up where that turn stopped and keep each',
-  'slice of work small enough to fit the limit.',
+const GOAL_RUNTIME_SLICE_CONTINUATION_PROMPT = [
+  'The runtime started a new goal turn at a work-slice boundary.',
+  'Continue from the existing context without a recap.',
   GOAL_CONTINUATION_PROMPT,
 ].join(' ');
 
@@ -172,6 +148,11 @@ interface PendingContinuation {
 interface ResumeContinuation {
   readonly turnId: number;
   readonly goalId: string;
+}
+
+interface GoalCompletedStepCount {
+  readonly goalId: string;
+  readonly count: number;
 }
 
 export const goalForkNoticeKey = defineState(
@@ -257,6 +238,8 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
   declare readonly _serviceBrand: undefined;
 
   private readonly wallClockDeadline = this._register(new MutableDisposable<IDisposable>());
+  private readonly completedStepsByTurn = new Map<number, GoalCompletedStepCount>();
+  private readonly runtimeSlicedTurns = new Set<number>();
   private pendingContinuation?: PendingContinuation;
 
   constructor(
@@ -299,6 +282,7 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
         {
           getGoal: () => this.getGoal().goal,
           isWaitForEnabled: () => this.isWaitForAvailable(),
+          isSetGoalBudgetEnabled: () => this.isSetGoalBudgetAvailable(),
         },
         injector,
       ),
@@ -758,6 +742,30 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
   private handleAfterStep(ctx: AfterStepContext): void {
     if (this.stopAfterBudgetReached(ctx)) return;
     this.enqueueGoalOutcomeContinuation(ctx);
+    this.stopAtRuntimeSliceBoundary(ctx);
+  }
+
+  private stopAtRuntimeSliceBoundary(ctx: AfterStepContext): boolean {
+    const goalId = this.goalTurnTarget(ctx.turnId);
+    const state = this.goalState;
+    if (goalId === undefined || state?.status !== 'active' || state.goalId !== goalId) {
+      return false;
+    }
+    const previous = this.completedStepsByTurn.get(ctx.turnId);
+    const completedSteps = previous?.goalId === goalId ? previous.count + 1 : 1;
+    this.completedStepsByTurn.set(ctx.turnId, { goalId, count: completedSteps });
+    if (ctx.finishReason !== 'tool_calls') return false;
+
+    const configuredLimit = this.config.get<LoopControl>(LOOP_CONTROL_SECTION)?.maxStepsPerTurn;
+    const reachedBoundary =
+      configuredLimit !== undefined && configuredLimit > 0
+        ? ctx.step >= configuredLimit
+        : completedSteps >= DEFAULT_GOAL_WORK_SLICE_STEPS;
+    if (!reachedBoundary) return false;
+
+    this.runtimeSlicedTurns.add(ctx.turnId);
+    ctx.stopTurn = true;
+    return true;
   }
 
   private stopAfterBudgetReached(ctx: AfterStepContext): boolean {
@@ -815,7 +823,8 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
     turnId: number,
     result: Pick<TurnEnded, 'reason' | 'error'>,
   ): Promise<void> {
-    const { goalId, lifecycleGoalId, starterTurn } = this.clearTurnTracking(turnId);
+    const { goalId, lifecycleGoalId, starterTurn, runtimeSliced } =
+      this.clearTurnTracking(turnId);
     const resumeContinuation = this.resumeContinuation;
     if (resumeContinuation?.turnId === turnId) this.resumeContinuation = undefined;
     if (resumeContinuation?.turnId === turnId && result.reason === 'cancelled') {
@@ -843,7 +852,7 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
     const state = this.goalState;
     if (state === null || state.status !== 'active' || state.goalId !== lifecycleGoalId) return;
     if (this.blockIfBudgetReached(state) !== null) return;
-    this.launchContinuationTurn(lifecycleGoalId, stepCapped);
+    this.launchContinuationTurn(lifecycleGoalId, stepCapped || runtimeSliced);
   }
 
   private clearTurnTracking(
@@ -852,21 +861,24 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
     readonly goalId?: string;
     readonly lifecycleGoalId?: string;
     readonly starterTurn: boolean;
+    readonly runtimeSliced: boolean;
   } {
     if (this.pendingContinuation?.turnId === turnId) this.pendingContinuation = undefined;
     if (this.liveTurnId === turnId) this.liveTurnId = undefined;
     const goalId = this.goalDrivenTurns.get(turnId);
     const lifecycleGoalId = this.goalTurnTarget(turnId);
     const starterTurn = this.goalStarterTurns.delete(turnId);
+    const runtimeSliced = this.runtimeSlicedTurns.delete(turnId);
     this.goalDrivenTurns.delete(turnId);
     this.countedGoalTurns.delete(turnId);
     this.goalOutcomeToolResultTurns.delete(turnId);
     this.goalOutcomeContinuationTurns.delete(turnId);
     this.budgetGraceTurns.delete(turnId);
+    this.completedStepsByTurn.delete(turnId);
     this.pendingContinuationGoals.delete(turnId);
     this.goalTurnTargets.delete(turnId);
     this.exhaustedTurnBudgetGoals.delete(turnId);
-    return { goalId, lifecycleGoalId, starterTurn };
+    return { goalId, lifecycleGoalId, starterTurn, runtimeSliced };
   }
 
   private async settleAbnormalTurn(
@@ -911,18 +923,25 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
     );
   }
 
-  private launchContinuationTurn(goalId: string, stepCapped = false): void {
+  private isSetGoalBudgetAvailable(): boolean {
+    return (
+      this.toolRegistry.resolve('SetGoalBudget') !== undefined &&
+      this.toolPolicy.isToolActive('SetGoalBudget')
+    );
+  }
+
+  private launchContinuationTurn(goalId: string, runtimeSliced = false): void {
     if (!this.isActiveGoal(goalId)) return;
     if (this.pendingContinuation !== undefined) return;
-    const prompt = stepCapped ? GOAL_STEP_CAP_CONTINUATION_PROMPT : GOAL_CONTINUATION_PROMPT;
+    const prompt = runtimeSliced
+      ? GOAL_RUNTIME_SLICE_CONTINUATION_PROMPT
+      : GOAL_CONTINUATION_PROMPT;
     const message: ContextMessage = {
       role: 'user',
       content: [
         {
           type: 'text',
-          text: this.isWaitForAvailable()
-            ? `${prompt} ${GOAL_WAIT_FOR_GUIDANCE}`
-            : prompt,
+          text: prompt,
         },
       ],
       toolCalls: [],

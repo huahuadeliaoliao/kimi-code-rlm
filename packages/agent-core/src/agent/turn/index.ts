@@ -76,6 +76,8 @@ interface PromptHookEndResult {
 
 const LLM_NOT_SET_MESSAGE = 'LLM not set, send "/login" to login';
 
+const DEFAULT_GOAL_WORK_SLICE_STEPS = 32;
+
 /** Origin tag for the synthetic "continue" prompt that drives each goal turn. */
 const GOAL_CONTINUATION_ORIGIN: PromptOrigin = { kind: 'system_trigger', name: 'goal_continuation' };
 const GOAL_RATE_LIMIT_PAUSE_REASON = 'Paused after provider rate limit';
@@ -92,47 +94,14 @@ const GOAL_PROVIDER_FILTERED_PAUSE_REASON = 'Paused after provider safety policy
  * stop by calling `UpdateGoal`; otherwise the driver runs another turn.
  */
 const GOAL_CONTINUATION_PROMPT = [
-  'Continue working toward the active goal.',
-  'Keep the self-audit brief. Do not explore unrelated interpretations once the goal can be',
-  'decided. If the objective is simple, already answered, impossible, unsafe, or contradictory,',
-  'do not run another goal turn. Explain briefly if useful, then call UpdateGoal with `complete`',
-  'or `blocked` in the same turn. Otherwise, weigh the objective and any completion criteria',
-  'against the work done so far, choose one bounded, useful slice of work, and use the existing',
-  'conversation context and your tools. Do not try to finish a broad goal in one turn unless the',
-  'whole goal is genuinely small. Most goal turns should not call UpdateGoal: after completing a',
-  'useful slice, if material work remains, end the turn normally without calling UpdateGoal so',
-  'the runtime can continue the goal in the next turn. Call UpdateGoal with `complete` only when',
-  'all required work is done, any stated validation has passed, and there is no useful next',
-  'action. Completion audit: before calling `complete`, verify the current state against the',
-  'actual objective and every explicit requirement. Treat weak or indirect evidence as not',
-  'complete. Do not mark complete after only producing a plan, summary, first pass, or partial',
-  'result. Do not mark complete merely because a budget is nearly exhausted or you want to stop.',
-  'Blocked audit: do not call UpdateGoal with `blocked` the first time you hit a blocker. Use',
-  '`blocked` only for a genuine impasse: an external condition, required user input, missing',
-  'credentials or permissions, or a persistent technical failure. For those non-terminal',
-  'blockers, the same blocking condition must repeat for at least 3 consecutive goal turns before',
-  'you call `blocked`, counting the original/user-triggered turn and automatic continuations.',
-  'If a previously blocked goal is resumed, treat the resumed run as a fresh blocked audit.',
-  'Exception: if the objective itself is impossible, unsafe, or contradictory, call UpdateGoal',
-  'with `blocked` in the same turn; do not run more goal turns just to satisfy the audit. Do not',
-  'use `blocked` because the work is large, hard, slow, uncertain, incomplete, still needs',
-  'validation, would benefit from clarification, or needs more goal turns. Once the 3-turn',
-  'threshold is met and you cannot make meaningful progress without user input or an',
-  'external-state change, call UpdateGoal with `blocked`; do not keep reporting the blocker while',
-  'leaving the goal active. Do not ask the user for input unless a real blocker prevents progress.',
+  'Continue the active goal from the existing context.',
+  'Resume useful work directly. Do not recap prior turns or emit a progress update.',
+  'Follow the active-goal reminder in this turn for completion, blocking, and budget rules.',
 ].join(' ');
 
-/**
- * Variant of {@link GOAL_CONTINUATION_PROMPT} used when the previous goal turn
- * ended by hitting the per-turn step limit (`loop_control.max_steps_per_turn`).
- * The limit fragments goal work into more continuation turns instead of
- * pausing the goal; the notice tells the model why, so it can size the next
- * slice to fit the limit.
- */
-const GOAL_STEP_CAP_CONTINUATION_PROMPT = [
-  'The previous goal turn reached the per-turn step limit before finishing its work,',
-  'so a new turn was started for you. Pick up where that turn stopped and keep each',
-  'slice of work small enough to fit the limit.',
+const GOAL_RUNTIME_SLICE_CONTINUATION_PROMPT = [
+  'The runtime started a new goal turn at a work-slice boundary.',
+  'Continue from the existing context without a recap.',
   GOAL_CONTINUATION_PROMPT,
 ].join(' ');
 
@@ -151,6 +120,7 @@ export class TurnFlow {
   private readonly interruptedTelemetryTurnIds = new Set<number>();
   private readonly interruptedTraceIdByTurn = new Map<number, string | undefined>();
   private readonly stepFailureByTurn = new Map<number, LoopTurnInterruptedEvent>();
+  private readonly runtimeSlicedTurnIds = new Set<number>();
   private activeRequestTrace: LLMRequestTrace | undefined;
   private latestTraceId: string | undefined;
   private currentStep = 0;
@@ -413,6 +383,7 @@ export class TurnFlow {
         return await this.driveGoal(firstTurnId, input, origin, signal);
       }
       const end = await this.runOneTurn(firstTurnId, input, origin, signal, true);
+      const runtimeSliced = this.runtimeSlicedTurnIds.delete(firstTurnId);
       // A goal can become active during an ordinary turn: the model creates one
       // with CreateGoal, or resumes a paused/blocked goal via UpdateGoal. Either
       // way, hand the now-active goal to the driver so it is actually pursued,
@@ -441,7 +412,10 @@ export class TurnFlow {
           [
             {
               type: 'text',
-              text: hitStepCap ? GOAL_STEP_CAP_CONTINUATION_PROMPT : GOAL_CONTINUATION_PROMPT,
+              text:
+                hitStepCap || runtimeSliced
+                  ? GOAL_RUNTIME_SLICE_CONTINUATION_PROMPT
+                  : GOAL_CONTINUATION_PROMPT,
             },
           ],
           GOAL_CONTINUATION_ORIGIN,
@@ -491,6 +465,7 @@ export class TurnFlow {
       // timer is correct even when the model completes mid-turn.
       await this.agent.goal.incrementTurn();
       const end = await this.runOneTurn(turnId, turnInput, turnOrigin, signal, false);
+      const runtimeSliced = this.runtimeSlicedTurnIds.delete(turnId);
 
       if (end.event.reason === 'cancelled') {
         await this.agent.goal.pauseOnInterrupt({ reason: 'Paused after interruption' });
@@ -529,7 +504,10 @@ export class TurnFlow {
       turnInput = [
         {
           type: 'text',
-          text: hitStepCap ? GOAL_STEP_CAP_CONTINUATION_PROMPT : GOAL_CONTINUATION_PROMPT,
+          text:
+            hitStepCap || runtimeSliced
+              ? GOAL_RUNTIME_SLICE_CONTINUATION_PROMPT
+              : GOAL_CONTINUATION_PROMPT,
         },
       ];
       turnOrigin = GOAL_CONTINUATION_ORIGIN;
@@ -809,6 +787,8 @@ export class TurnFlow {
     let stopHookContinuationUsed = false;
     let goalOutcomeMessageContinuationUsed = false;
     let goalOutcomeToolResultPending = false;
+    let sliceGoalId: string | undefined;
+    let completedGoalSteps = 0;
     const deduper = new ToolCallDeduplicator({ telemetry: this.agent.telemetry });
     await this.agent.mcp?.waitForInitialLoad(signal);
     // Surface the active goal at the start of the turn (append-only; no-op when
@@ -875,11 +855,29 @@ export class TurnFlow {
               await this.agent.injection.inject();
               return;
             },
-            afterStep: async ({ usage }) => {
+            // oxlint-disable-next-line no-loop-func -- goal slice state is scoped to this turn.
+            afterStep: async ({ usage, stopReason, stepNumber }) => {
               this.agent.usage.record(model, usage, 'turn');
               await this.agent.fullCompaction.afterStep();
               deduper.endStep();
-              return stopForGoalBudget ? { stopTurn: true } : undefined;
+              if (stopForGoalBudget) return { stopTurn: true };
+
+              const activeGoal = this.agent.goal.getActiveGoal();
+              if (activeGoal === null) return undefined;
+              if (sliceGoalId !== activeGoal.goalId) {
+                sliceGoalId = activeGoal.goalId;
+                completedGoalSteps = 0;
+              }
+              completedGoalSteps += 1;
+              if (stopReason !== 'tool_use') return undefined;
+              const reachedBoundary =
+                maxStepsPerTurn !== undefined && maxStepsPerTurn > 0
+                  ? stepNumber >= maxStepsPerTurn
+                  : completedGoalSteps >= DEFAULT_GOAL_WORK_SLICE_STEPS;
+              if (!reachedBoundary) return undefined;
+
+              this.runtimeSlicedTurnIds.add(turnId);
+              return { stopTurn: true };
             },
             // oxlint-disable-next-line no-loop-func -- stop hook continuation state is scoped to this turn.
             shouldContinueAfterStop: async (ctx) => {

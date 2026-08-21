@@ -45,6 +45,21 @@ const IMPORT_CONTEXT_GUIDANCE =
   'This is a prior conversation history that may be relevant to the current session. ' +
   'Please review this context and use it to inform your responses.';
 
+function isNonInjectionUserMessage(message: ContextMessage): boolean {
+  if (message.role !== 'user') return false;
+  const kind = message.origin?.kind;
+  return kind !== 'injection' && kind !== 'retry';
+}
+
+function matchesGoalDisclosure(
+  value: unknown,
+  goal: { readonly goalId: string; readonly status: string },
+): boolean {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const disclosure = value as { readonly goalId?: unknown; readonly status?: unknown };
+  return disclosure.goalId === goal.goalId && disclosure.status === goal.status;
+}
+
 // Invariant: _history must not contain an unresolved tool call exchange except
 // at the tail. When the tail is unresolved, pendingToolResultIds is exactly the
 // set of missing tool result ids for that tail exchange; appendMessage keeps
@@ -543,6 +558,32 @@ export class ContextMemory {
     });
   }
 
+  private goalControlHistory(): ContextMessage[] {
+    const goal = this.agent.goal.getGoal().goal;
+    const latestGoalReminder =
+      goal === null
+        ? -1
+        : this._history.findLastIndex((message) => {
+            const origin = message.origin;
+            return (
+              origin?.kind === 'injection' &&
+              origin.variant === 'goal' &&
+              matchesGoalDisclosure(origin.disclosure, goal)
+            );
+          });
+    const latestTurnDriver = this._history.findLastIndex(isNonInjectionUserMessage);
+    return this._history.filter((message, index) => {
+      const origin = message.origin;
+      if (origin?.kind === 'injection' && origin.variant === 'goal') {
+        return index === latestGoalReminder;
+      }
+      if (origin?.kind === 'system_trigger' && origin.name === 'goal_continuation') {
+        return goal?.status === 'active' && index === latestTurnDriver;
+      }
+      return true;
+    });
+  }
+
   get messages(): Message[] {
     // The normal wire projection. `dropOrphanResults` is on for every
     // request-building projection (here, `strictMessages`, and the compaction
@@ -550,7 +591,7 @@ export class ContextMemory {
     // on strict providers and useless to the model, so it never reaches the
     // provider — while fragment projections (e.g. token estimation of a history
     // slice) leave it alone.
-    return this.project(this.history, { dropOrphanResults: true });
+    return this.project(this.goalControlHistory(), { dropOrphanResults: true });
   }
 
   // Last-resort projection for the post-400 strict resend: close every open tool
@@ -561,7 +602,7 @@ export class ContextMemory {
   // Only used when the provider has already rejected the normal projection —
   // see the adjacency fallback in `turn-step`.
   get strictMessages(): Message[] {
-    return this.project(this.history, {
+    return this.project(this.goalControlHistory(), {
       synthesizeMissing: true,
       dropOrphanResults: true,
       dedupeDuplicateToolCalls: true,

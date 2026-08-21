@@ -1,3 +1,4 @@
+<goal_state>paused</goal_state>
 There is a goal, currently paused${reason_suffix}. It is not being pursued autonomously right now.
 
 <untrusted_objective>

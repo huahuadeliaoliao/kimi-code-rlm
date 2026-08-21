@@ -33,6 +33,7 @@ import { IAgentSwarmService } from '#/features/swarm/agent/swarm';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import type { PermissionMode, PermissionPolicyResult } from '#/agent/permissionPolicy/types';
 import { IAgentToolApprovalService } from '#/agent/toolApproval/toolApproval';
+import { IAgentToolDedupeService } from '#/agent/toolDedupe/toolDedupe';
 import {
   IAgentToolExecutorService,
   type ToolExecutionResult,
@@ -1305,8 +1306,10 @@ describe('AgentGoalService core workflow hooks', () => {
       kind: 'system_trigger',
       name: 'goal_continuation',
     });
-    expect(JSON.stringify(context.get().at(-1)?.content)).toContain('Continue working toward');
-    expect(JSON.stringify(context.get().at(-1)?.content)).toContain('WaitFor');
+    expect(JSON.stringify(context.get().at(-1)?.content)).toContain(
+      'Continue the active goal from the existing context',
+    );
+    expect(JSON.stringify(context.get().at(-1)?.content)).not.toContain('WaitFor');
   });
 
   it('blocks the next continuation only after the final allowed turn ends', async () => {
@@ -1578,6 +1581,107 @@ describe('AgentGoalService core workflow hooks', () => {
     expect(loopService.launches).toEqual([]);
   });
 
+  it('ends a nonterminal tool chain cleanly at the default runtime slice boundary', async () => {
+    await goals.createGoal({ objective: 'finish the task' });
+
+    const turn = makeTurn(40);
+    eventBus.publish(new TurnStarted({ turnId: turn.id, origin: USER_PROMPT_ORIGIN }));
+    await loopService.hooks.onWillBeginStep.run({
+      turnId: turn.id,
+      step: 1,
+      firstStepOfTurn: true,
+      signal: turn.signal,
+    });
+    for (let step = 1; step < 32; step += 1) {
+      const afterStep: AfterStepContext = {
+        turnId: turn.id,
+        step,
+        firstStepOfTurn: step === 1,
+        signal: turn.signal,
+        usage: zeroUsage,
+        finishReason: 'tool_calls',
+        stopTurn: false,
+      };
+      await loopService.hooks.onDidFinishStep.run(afterStep);
+      expect(afterStep.stopTurn).toBe(false);
+      expect(loopService.drainNextBatch(context)).toBeDefined();
+    }
+    const boundaryStep: AfterStepContext = {
+      turnId: turn.id,
+      step: 32,
+      firstStepOfTurn: false,
+      signal: turn.signal,
+      usage: zeroUsage,
+      finishReason: 'tool_calls',
+      stopTurn: false,
+    };
+
+    await loopService.hooks.onDidFinishStep.run(boundaryStep);
+
+    expect(boundaryStep.stopTurn).toBe(true);
+    endTurn(eventBus, turn);
+    await vi.waitFor(() => expect(loopService.launches).toHaveLength(1));
+    expect(loopService.drainNextBatch(context)).toBeDefined();
+    const continuation = context.get().findLast(
+      (message) =>
+        message.origin?.kind === 'system_trigger' &&
+        message.origin.name === 'goal_continuation',
+    );
+    expect(continuation).toBeDefined();
+    const prompt = JSON.stringify(continuation?.content);
+    expect(prompt).toContain('runtime started a new goal turn at a work-slice boundary');
+    expect(prompt).toContain('without a recap');
+    expect(prompt).not.toMatch(/bounded, useful|end the turn normally|progress update.*then stop/i);
+  });
+
+  it('does not label a natural text completion as a runtime slice boundary', async () => {
+    await goals.createGoal({ objective: 'finish the task' });
+
+    const turn = makeTurn(41);
+    eventBus.publish(new TurnStarted({ turnId: turn.id, origin: USER_PROMPT_ORIGIN }));
+    await loopService.hooks.onWillBeginStep.run({
+      turnId: turn.id,
+      step: 1,
+      firstStepOfTurn: true,
+      signal: turn.signal,
+    });
+    for (let step = 1; step < 32; step += 1) {
+      await loopService.hooks.onDidFinishStep.run({
+        turnId: turn.id,
+        step,
+        firstStepOfTurn: step === 1,
+        signal: turn.signal,
+        usage: zeroUsage,
+        finishReason: 'tool_calls',
+        stopTurn: false,
+      });
+      expect(loopService.drainNextBatch(context)).toBeDefined();
+    }
+    const finalStep: AfterStepContext = {
+      turnId: turn.id,
+      step: 32,
+      firstStepOfTurn: false,
+      signal: turn.signal,
+      usage: zeroUsage,
+      finishReason: 'completed',
+      stopTurn: false,
+    };
+
+    await loopService.hooks.onDidFinishStep.run(finalStep);
+    expect(finalStep.stopTurn).toBe(false);
+    endTurn(eventBus, turn);
+    await vi.waitFor(() => expect(loopService.launches).toHaveLength(1));
+    expect(loopService.drainNextBatch(context)).toBeDefined();
+    const continuation = context.get().findLast(
+      (message) =>
+        message.origin?.kind === 'system_trigger' &&
+        message.origin.name === 'goal_continuation',
+    );
+    const prompt = JSON.stringify(continuation?.content);
+    expect(prompt).toContain('Continue the active goal from the existing context');
+    expect(prompt).not.toContain('work-slice boundary');
+  });
+
   it('continues the goal when a goal turn hits the per-turn step limit', async () => {
     await goals.createGoal({ objective: 'finish the task' });
 
@@ -1594,8 +1698,8 @@ describe('AgentGoalService core workflow hooks', () => {
       name: 'goal_continuation',
     });
     const prompt = JSON.stringify(context.get().at(-1)?.content);
-    expect(prompt).toContain('per-turn step limit');
-    expect(prompt).toContain('Pick up where that turn stopped');
+    expect(prompt).toContain('runtime started a new goal turn at a work-slice boundary');
+    expect(prompt).toContain('Continue from the existing context without a recap');
   });
 
   it('blocks active goals when the user prompt hook blocks the turn', async () => {
@@ -2255,6 +2359,66 @@ describe('AgentGoalService goal outcome tool result flow', () => {
     }
   });
 
+  it.each([16, 32, 48])(
+    'uses maxStepsPerTurn=%i as a clean runtime slice boundary',
+    async (sliceSteps) => {
+      const ctx = createTestAgent(
+        agentService(IAgentToolDedupeService, { _serviceBrand: undefined }),
+        { initialConfig: { providers: {}, loopControl: { maxStepsPerTurn: sliceSteps } } },
+      );
+      try {
+        ctx.configure({ tools: ['GetGoal', 'UpdateGoal'] });
+        await ctx.rpc.createGoal({ objective: 'work' });
+        const ended: TurnEnded[] = [];
+        ctx.get(IEventBus).subscribe(TurnEnded, (event) => ended.push(event));
+
+        for (let step = 1; step <= sliceSteps; step += 1) {
+          ctx.mockNextResponse({
+            type: 'function',
+            id: `inspect_goal_${String(step)}`,
+            name: 'GetGoal',
+            arguments: '{}',
+          });
+        }
+        ctx.mockNextResponse({
+          type: 'function',
+          id: 'complete',
+          name: 'UpdateGoal',
+          arguments: JSON.stringify({ status: 'complete' }),
+        });
+        ctx.mockNextResponse({ type: 'text', text: 'Done.' });
+
+        await ctx.rpc.prompt({ input: [{ type: 'text', text: 'work' }] });
+        await vi.waitFor(() => {
+          expect(ctx.llmCalls).toHaveLength(sliceSteps + 2);
+        });
+        await vi.waitFor(() => {
+          expect(ended).toHaveLength(2);
+        });
+
+        expect(ended.map((event) => event.reason)).toEqual(['completed', 'completed']);
+        const continuationCall = ctx.llmCalls[sliceSteps]!;
+        const boundaryAssistantText = continuationCall.history
+          .filter((message) => message.role === 'assistant')
+          .flatMap((message) =>
+            message.content
+              .filter((part) => part.type === 'text')
+              .map((part) => part.text.trim())
+              .filter(Boolean),
+          );
+        expect(boundaryAssistantText).toEqual([]);
+        const continuationHistory = JSON.stringify(continuationCall.history);
+        expect(continuationHistory).toContain('work-slice boundary');
+        expect(continuationHistory).toContain(
+          'Continue from the existing context without a recap',
+        );
+        expect((await ctx.rpc.getGoal({})).goal).toBeNull();
+      } finally {
+        await ctx.dispose();
+      }
+    },
+  );
+
   it('does not force a goal outcome summary after maxStepsPerTurn is exhausted', async () => {
     const ctx = createTestAgent({
       initialConfig: { providers: {}, loopControl: { maxStepsPerTurn: 1 } },
@@ -2292,6 +2456,85 @@ describe('AgentGoalService goal outcome tool result flow', () => {
       expect(JSON.stringify(history)).toContain('Write a concise final message');
       expect(JSON.stringify(history)).not.toContain('This summary should not run.');
       expect(history.at(-1)?.role).toBe('tool');
+    } finally {
+      await ctx.dispose();
+    }
+  });
+});
+
+describe('AgentGoalService request-time control history', () => {
+  it('keeps only the current Goal reminder and continuation without rewriting wire history', async () => {
+    const ctx = createTestAgent();
+    try {
+      ctx.configure({ tools: ['UpdateGoal'] });
+      const goals = ctx.get(IAgentGoalService);
+      const context = ctx.get(IAgentContextMemoryService);
+      await goals.createGoal({ objective: 'finish current work' });
+      context.append({
+        role: 'user',
+        content: [{ type: 'text', text: 'HISTORICAL_BOUNDED_SLICE_REMINDER' }],
+        toolCalls: [],
+        origin: { kind: 'injection', variant: 'goal' },
+      });
+      context.append({
+        role: 'user',
+        content: [{ type: 'text', text: 'HISTORICAL_GOAL_CONTINUATION' }],
+        toolCalls: [],
+        origin: { kind: 'system_trigger', name: 'goal_continuation' },
+      });
+
+      ctx.mockNextResponse({ type: 'text', text: 'Nonterminal result.' });
+      ctx.mockNextResponse({
+        type: 'function',
+        id: 'complete',
+        name: 'UpdateGoal',
+        arguments: JSON.stringify({ status: 'complete' }),
+      });
+      ctx.mockNextResponse({ type: 'text', text: 'Done.' });
+
+      await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Continue current work' }] });
+      await vi.waitFor(() => {
+        expect(ctx.llmCalls).toHaveLength(3);
+      });
+
+      for (const call of ctx.llmCalls) {
+        expect(JSON.stringify(call.history)).not.toContain('HISTORICAL_BOUNDED_SLICE_REMINDER');
+        expect(JSON.stringify(call.history)).not.toContain('HISTORICAL_GOAL_CONTINUATION');
+      }
+      const continuationHistory = JSON.stringify(ctx.llmCalls[1]?.history);
+      expect(continuationHistory.match(/<goal_state>active<\/goal_state>/g)).toHaveLength(1);
+      expect(continuationHistory.match(/Continue the active goal from the existing context/g)).toHaveLength(1);
+      expect(JSON.stringify(ctx.llmCalls[2]?.history)).not.toContain('<goal_state>active</goal_state>');
+      expect(JSON.stringify(context.get())).toContain('HISTORICAL_BOUNDED_SLICE_REMINDER');
+      expect(JSON.stringify(context.get())).toContain('HISTORICAL_GOAL_CONTINUATION');
+    } finally {
+      await ctx.dispose();
+    }
+  });
+
+  it('retains the current paused state while filtering a historical active reminder', async () => {
+    const ctx = createTestAgent();
+    try {
+      const goals = ctx.get(IAgentGoalService);
+      const context = ctx.get(IAgentContextMemoryService);
+      await goals.createGoal({ objective: 'finish current work' });
+      await goals.pauseGoal({ reason: 'waiting for user' });
+      context.append({
+        role: 'user',
+        content: [{ type: 'text', text: 'HISTORICAL_ACTIVE_GOAL_REMINDER' }],
+        toolCalls: [],
+        origin: { kind: 'injection', variant: 'goal' },
+      });
+      ctx.mockNextResponse({ type: 'text', text: 'Handled normally.' });
+
+      await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Answer an unrelated question' }] });
+      await ctx.untilTurnEnd();
+
+      const history = JSON.stringify(ctx.llmCalls[0]?.history);
+      expect(history).toContain('<goal_state>paused</goal_state>');
+      expect(history.match(/<goal_state>paused<\/goal_state>/g)).toHaveLength(1);
+      expect(history).not.toContain('HISTORICAL_ACTIVE_GOAL_REMINDER');
+      expect(JSON.stringify(context.get())).toContain('HISTORICAL_ACTIVE_GOAL_REMINDER');
     } finally {
       await ctx.dispose();
     }
@@ -2437,7 +2680,7 @@ describe('AgentGoalService WaitFor regression', () => {
       await vi.waitFor(() => expect(continuationTurnIds).toHaveLength(1));
       await vi.waitFor(() => expect(ctx.llmCalls).toHaveLength(4));
       const continuationHistory = JSON.stringify(ctx.llmCalls[2]?.history);
-      expect(continuationHistory).toContain('Continue working toward the active goal');
+      expect(continuationHistory).toContain('Continue the active goal from the existing context');
       expect(continuationHistory).toContain('WaitFor');
     } finally {
       await ctx.dispose();
@@ -2740,7 +2983,9 @@ describe('AgentGoalService WaitFor guidance gating', () => {
       await ctx.rpc.prompt({ input: [{ type: 'text', text: 'start work' }] });
       await vi.waitFor(() => expect(ctx.llmCalls).toHaveLength(3));
 
-      expect(JSON.stringify(ctx.llmCalls[0])).toContain('re-invoked again and again');
+      expect(JSON.stringify(ctx.llmCalls[0])).toContain(
+        'WaitFor inside this turn rather than stopping for another continuation',
+      );
     } finally {
       await ctx.dispose();
     }
@@ -2765,7 +3010,9 @@ describe('AgentGoalService WaitFor guidance gating', () => {
       await vi.waitFor(() => expect(ctx.llmCalls).toHaveLength(3));
 
       const allCalls = JSON.stringify(ctx.llmCalls);
-      expect(allCalls).not.toContain('re-invoked again and again');
+      expect(allCalls).not.toContain(
+        'WaitFor inside this turn rather than stopping for another continuation',
+      );
       for (const call of ctx.llmCalls) {
         expect(call.tools.map((tool) => tool.name)).not.toContain('WaitFor');
       }
@@ -2801,7 +3048,9 @@ describe('AgentGoalService WaitFor guidance gating', () => {
 
       const allCalls = JSON.stringify(ctx.llmCalls);
       expect(allCalls).not.toContain('WaitFor');
-      expect(allCalls).not.toContain('re-invoked again and again');
+      expect(allCalls).not.toContain(
+        'WaitFor inside this turn rather than stopping for another continuation',
+      );
       expect((await ctx.rpc.getGoal({})).goal).toBeNull();
     } finally {
       await ctx.dispose();
@@ -2843,7 +3092,9 @@ describe('AgentGoalService WaitFor guidance gating', () => {
 
       await ctx.rpc.prompt({ input: [{ type: 'text', text: 'start work' }] });
       await vi.waitFor(() => expect(ctx.llmCalls).toHaveLength(1));
-      expect(JSON.stringify(ctx.llmCalls[0])).toContain('re-invoked again and again');
+      expect(JSON.stringify(ctx.llmCalls[0])).toContain(
+        'WaitFor inside this turn rather than stopping for another continuation',
+      );
 
       await ctx.get(ISessionToolPolicy).setDisabledTools(['WaitFor']);
       settle({ result: 'bg result' });
@@ -2851,13 +3102,15 @@ describe('AgentGoalService WaitFor guidance gating', () => {
       await vi.waitFor(() => expect(ctx.llmCalls).toHaveLength(4));
       const continuationCall = ctx.llmCalls[2]!;
       const continuationPrompt = continuationCall.history.find((message) =>
-        JSON.stringify(message).includes('Continue working toward the active goal'),
+        JSON.stringify(message).includes('Continue the active goal from the existing context'),
       );
       expect(continuationPrompt).toBeDefined();
-      expect(JSON.stringify(continuationPrompt)).not.toContain('re-invoked again and again');
-      const freshReminder = continuationCall.history.at(-1);
-      expect(JSON.stringify(freshReminder)).toContain('active goal');
-      expect(JSON.stringify(freshReminder)).not.toContain('re-invoked again and again');
+      expect(JSON.stringify(continuationPrompt)).not.toContain('WaitFor');
+      const freshReminder = continuationCall.history.find((message) =>
+        JSON.stringify(message).includes('<goal_state>active</goal_state>'),
+      );
+      expect(freshReminder).toBeDefined();
+      expect(JSON.stringify(freshReminder)).not.toContain('WaitFor');
       expect((await ctx.rpc.getGoal({})).goal).toBeNull();
       expect((await ctx.rpc.getGoal({})).goal).toBeNull();
     } finally {

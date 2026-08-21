@@ -146,19 +146,17 @@ describe('goal session end-to-end', () => {
     const firstHistory = JSON.stringify(scripted.calls[0]?.history ?? []);
     expect(firstHistory).toContain('<untrusted_objective>');
 
-    // Continuation turns should nudge the model to decide obvious terminal cases
-    // instead of spending another round over-interpreting the goal.
     const continuationHistory = JSON.stringify(scripted.calls[1]?.history ?? []);
-    expect(continuationHistory).toContain('Keep the self-audit brief');
-    expect(continuationHistory).toContain('do not run another goal turn');
-    expect(continuationHistory).toContain('end the turn normally without calling UpdateGoal');
-    expect(continuationHistory).toContain('Completion audit');
-    expect(continuationHistory).toContain('Blocked audit');
-    expect(continuationHistory).toContain('3 consecutive goal turns');
-    expect(continuationHistory).toContain('fresh blocked audit');
+    expect(continuationHistory).toContain('Continue the active goal from the existing context');
+    expect(continuationHistory).toContain('Do not recap prior turns or emit a progress update');
+    expect(continuationHistory).toContain('runtime controls continuation boundaries');
+    expect(continuationHistory).toContain('Do not call UpdateGoal merely to checkpoint progress');
+    expect(continuationHistory).toContain('at least three consecutive goal turns');
+    expect(continuationHistory).toContain('A resumed goal starts that count again');
     expect(continuationHistory).toContain('impossible, unsafe, or contradictory');
-    expect(continuationHistory).toContain('do not run more goal turns just to satisfy the audit');
-    expect(continuationHistory).toContain('only for a genuine impasse');
+    expect(continuationHistory).not.toMatch(
+      /self-audit|Completion audit|Blocked audit|bounded, useful|end the turn normally/i,
+    );
 
     // Terminal UpdateGoal asks the model for one final user-facing summary.
     expect(scripted.calls).toHaveLength(3);
@@ -204,6 +202,47 @@ describe('goal session end-to-end', () => {
     );
     expect(completion).toBeDefined();
     expect(finalUsage).toBeGreaterThan(0);
+  });
+
+  it('filters historical Goal controls from model requests without rewriting raw history', async () => {
+    const sessionDir = await makeTempDir();
+    const events: Array<Record<string, unknown>> = [];
+    const { session, agent, scripted } = await setupSession(sessionDir, events, ['UpdateGoal']);
+    const api = new SessionAPIImpl(session);
+    await api.createGoal({ agentId: 'main', objective: 'finish current work' });
+    agent.context.appendSystemReminder('HISTORICAL_BOUNDED_SLICE_REMINDER', {
+      kind: 'injection',
+      variant: 'goal',
+    });
+    agent.context.appendUserMessage(
+      [{ type: 'text', text: 'HISTORICAL_GOAL_CONTINUATION' }],
+      { kind: 'system_trigger', name: 'goal_continuation' },
+    );
+
+    scripted.mockNextResponse({ type: 'text', text: 'Nonterminal result.' });
+    scripted.mockNextResponse({
+      type: 'function',
+      id: 'complete',
+      name: 'UpdateGoal',
+      arguments: JSON.stringify({ status: 'complete' }),
+    });
+    scripted.mockNextResponse({ type: 'text', text: 'Done.' });
+
+    agent.turn.prompt([{ type: 'text', text: 'Continue current work' }]);
+    await agent.turn.waitForCurrentTurn();
+
+    for (const call of scripted.calls) {
+      expect(JSON.stringify(call.history)).not.toContain('HISTORICAL_BOUNDED_SLICE_REMINDER');
+      expect(JSON.stringify(call.history)).not.toContain('HISTORICAL_GOAL_CONTINUATION');
+    }
+    const continuationHistory = JSON.stringify(scripted.calls[1]?.history ?? []);
+    expect(continuationHistory.match(/<goal_state>active<\/goal_state>/g)).toHaveLength(1);
+    expect(continuationHistory.match(/Continue the active goal from the existing context/g)).toHaveLength(1);
+    expect(JSON.stringify(scripted.calls[2]?.history ?? [])).not.toContain(
+      '<goal_state>active</goal_state>',
+    );
+    expect(JSON.stringify(agent.context.history)).toContain('HISTORICAL_BOUNDED_SLICE_REMINDER');
+    expect(JSON.stringify(agent.context.history)).toContain('HISTORICAL_GOAL_CONTINUATION');
   });
 
   it('blocks at a turn budget (no wrap-up segment)', async () => {
@@ -253,7 +292,9 @@ describe('goal session end-to-end', () => {
 
     expect(scripted.calls.length).toBeGreaterThanOrEqual(4);
     expect(JSON.stringify(scripted.calls[0]?.history ?? [])).toContain('currently paused');
-    expect(JSON.stringify(scripted.calls[2]?.history ?? [])).toContain('Continue working toward the active goal');
+    expect(JSON.stringify(scripted.calls[2]?.history ?? [])).toContain(
+      'Continue the active goal from the existing context',
+    );
     expect(JSON.stringify(scripted.calls[3]?.history ?? [])).toContain('Write a concise final message for the user');
     expect((await api.getGoal({ agentId: 'main' })).goal).toBeNull();
   });
@@ -293,7 +334,7 @@ describe('goal session end-to-end', () => {
     // the UpdateGoal('complete') the standalone turn never would have.
     expect(scripted.calls.length).toBeGreaterThanOrEqual(4);
     expect(JSON.stringify(scripted.calls[2]?.history ?? [])).toContain(
-      'Continue working toward the active goal',
+      'Continue the active goal from the existing context',
     );
     const turnStarts = events.filter((e) => e['type'] === 'turn.started').length;
     expect(turnStarts).toBeGreaterThanOrEqual(2);
@@ -340,7 +381,7 @@ describe('goal session end-to-end', () => {
     expect(scripted.calls).toHaveLength(3);
     expect(events.filter((e) => e['type'] === 'turn.started')).toHaveLength(1);
     expect(JSON.stringify(agent.context.history)).not.toContain(
-      'Continue working toward the active goal',
+      'Continue the active goal from the existing context',
     );
   });
 
@@ -522,8 +563,11 @@ describe('goal session end-to-end', () => {
         (event['error'] as Record<string, unknown> | undefined)?.['code'] ===
           ErrorCodes.LOOP_MAX_STEPS_EXCEEDED,
     );
-    expect(maxStepEnds).toHaveLength(2);
-    // The cap never pauses or blocks the goal: no stopped status is ever
+    expect(maxStepEnds).toHaveLength(0);
+    expect(
+      events.filter((event) => event['type'] === 'turn.ended' && event['reason'] === 'completed'),
+    ).toHaveLength(3);
+    // The runtime boundary never pauses or blocks the goal: no stopped status is ever
     // emitted, and the goal completes (record cleared) in the third turn.
     expect(
       events.filter(
@@ -543,10 +587,9 @@ describe('goal session end-to-end', () => {
     expect((completion?.['change'] as Record<string, unknown>)?.['stats']).toMatchObject({
       turnsUsed: 3,
     });
-    // Capped continuation turns are told why a new turn was started.
     const history = JSON.stringify(agent.context.history);
-    expect(history).toContain('per-turn step limit');
-    expect(history).toContain('Pick up where that turn stopped');
+    expect(history).toContain('runtime started a new goal turn at a work-slice boundary');
+    expect(history).toContain('Continue from the existing context without a recap');
   });
 
   it('starts pursuing a goal created mid-turn even when that turn hits maxStepsPerTurn', async () => {
@@ -585,6 +628,12 @@ describe('goal session end-to-end', () => {
     expect(events).toContainEqual(
       expect.objectContaining({
         type: 'turn.ended',
+        reason: 'completed',
+      }),
+    );
+    expect(events).not.toContainEqual(
+      expect.objectContaining({
+        type: 'turn.ended',
         reason: 'failed',
         error: expect.objectContaining({ code: ErrorCodes.LOOP_MAX_STEPS_EXCEEDED }),
       }),
@@ -607,7 +656,9 @@ describe('goal session end-to-end', () => {
     expect((completion?.['change'] as Record<string, unknown>)?.['stats']).toMatchObject({
       turnsUsed: 2,
     });
-    expect(JSON.stringify(agent.context.history)).toContain('per-turn step limit');
+    expect(JSON.stringify(agent.context.history)).toContain(
+      'runtime started a new goal turn at a work-slice boundary',
+    );
   });
 
   it('pauses the goal on provider rate limits', async () => {

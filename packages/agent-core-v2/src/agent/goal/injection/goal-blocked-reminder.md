@@ -1,3 +1,4 @@
+<goal_state>blocked</goal_state>
 There is a goal, currently blocked${reason_suffix}. It is not being pursued autonomously right now.
 
 <untrusted_objective>

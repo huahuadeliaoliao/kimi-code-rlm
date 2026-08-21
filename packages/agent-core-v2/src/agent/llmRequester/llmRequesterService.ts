@@ -3,6 +3,9 @@ import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { defineState } from '#/state/state';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import type { ContextMessage, PromptOrigin } from '#/agent/contextMemory/types';
+import type { GoalInjectionDisclosure } from '#/agent/goal/injection/goalInjection';
+import { goalKey, type GoalState } from '#/agent/goal/goalOps';
 import {
   IAgentContextProjectorService,
   type MediaStripSnapshot,
@@ -80,6 +83,34 @@ const EMPTY_TOOL_PARAMETERS: Record<string, unknown> = {
 };
 
 const noopOnPart: AgentLLMRequestPartHandler = () => {};
+
+function messageOrigin(message: Message): PromptOrigin | undefined {
+  return (message as ContextMessage).origin;
+}
+
+function isNonInjectionUserMessage(message: Message): boolean {
+  if (message.role !== 'user') return false;
+  const kind = messageOrigin(message)?.kind;
+  return kind !== 'injection' && kind !== 'retry';
+}
+
+function findLatestGoalReminder(
+  messages: readonly Message[],
+  goal: GoalState | null,
+): number {
+  if (goal === null) return -1;
+  return messages.findLastIndex((message) => {
+    const origin = messageOrigin(message);
+    if (origin?.kind !== 'injection' || origin.variant !== 'goal') return false;
+    return isCurrentGoalDisclosure(origin.disclosure, goal);
+  });
+}
+
+function isCurrentGoalDisclosure(value: unknown, goal: GoalState): boolean {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const disclosure = value as Partial<GoalInjectionDisclosure>;
+  return disclosure.goalId === goal.goalId && disclosure.status === goal.status;
+}
 
 interface ResolvedLLMRequest {
   readonly requester: ModelRequester;
@@ -298,6 +329,38 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
     }
   }
 
+  private filterControlHistory(
+    messages: readonly Message[],
+    source: AgentLLMRequestSource | undefined,
+  ): Message[] {
+    const goal = this.states.has(goalKey) ? this.states.get(goalKey) : null;
+    const latestGoalReminder = findLatestGoalReminder(messages, goal);
+    const latestTurnDriver =
+      source?.type === 'turn' ? messages.findLastIndex(isNonInjectionUserMessage) : -1;
+    const activeTools = this.profile.getActiveToolNames();
+
+    return messages.filter((message, index) => {
+      const origin = messageOrigin(message);
+      if (origin?.kind === 'injection' && origin.variant === 'goal') {
+        return index === latestGoalReminder;
+      }
+      if (
+        origin?.kind === 'system_trigger' &&
+        origin.name === 'goal_continuation'
+      ) {
+        return goal?.status === 'active' && index === latestTurnDriver;
+      }
+      if (origin?.kind !== 'injection' || activeTools === undefined) return true;
+      if (origin.variant === 'plan_mode') {
+        return activeTools.includes('EnterPlanMode') || activeTools.includes('ExitPlanMode');
+      }
+      if (origin.variant === 'swarm_mode' || origin.variant === 'swarm_mode_exit') {
+        return activeTools.includes('AgentSwarm');
+      }
+      return true;
+    });
+  }
+
   private async runRequest(
     request: ResolvedLLMRequest,
     onPart: AgentLLMRequestPartHandler,
@@ -305,7 +368,9 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
     onRequestTrace: (traceId: string | undefined) => void,
   ): Promise<AgentLLMRequestFinish> {
     this.toolCallIdNormalizer.seedFrom(this.context.get());
-    const shaped = this.toolSelect.shapeHistory(request.messages);
+    const shaped = this.toolSelect.shapeHistory(
+      this.filterControlHistory(request.messages, request.source),
+    );
     const recoveredStrip = this.mediaStripSnapshotForTurn(request.source);
     let policy: ProjectionPolicy | undefined =
       recoveredStrip !== undefined

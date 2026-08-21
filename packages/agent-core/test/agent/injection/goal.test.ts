@@ -52,6 +52,7 @@ describe('GoalInjector content', () => {
     await store.createGoal({ objective: 'work' });
     await store.pauseGoal();
     const text = (await injectOnce(store))!;
+    expect(text).toContain('<goal_state>paused</goal_state>');
     expect(text).toContain('<untrusted_objective>\nwork\n</untrusted_objective>');
   });
 
@@ -68,15 +69,24 @@ describe('GoalInjector content', () => {
     await store.createGoal({ objective: 'work' });
     await store.markBlocked({ reason: 'no progress' });
     const text = (await injectOnce(store))!;
+    expect(text).toContain('<goal_state>blocked</goal_state>');
     expect(text).toContain('no progress');
     expect(text).toContain('<untrusted_objective>\nwork\n</untrusted_objective>');
   });
 
-  it('wraps the objective for an active goal', async () => {
+  it('wraps the objective for an active goal without generic status counters', async () => {
     const store = makeStore();
     await store.createGoal({ objective: 'Ship feature X' });
     const text = (await injectOnce(store))!;
+    expect(text).toContain('<goal_state>active</goal_state>');
     expect(text).toContain('<untrusted_objective>\nShip feature X\n</untrusted_objective>');
+    expect(text).not.toContain('Status: active');
+    expect(text).not.toContain('Progress:');
+    expect(text).not.toContain('Budget guidance:');
+    expect(text).not.toContain('Budgets:');
+    expect(text).not.toMatch(
+      /self-audit|Completion audit|Blocked audit|bounded, useful|end the turn normally/i,
+    );
   });
 
   it('wraps the completion criterion when present', async () => {
@@ -102,6 +112,15 @@ describe('GoalInjector content', () => {
     expect(text.match(/<\/untrusted_completion_criterion>/g)).toHaveLength(1);
   });
 
+  it('keeps an unbudgeted reminder stable as usage counters change', async () => {
+    const store = makeStore();
+    await store.createGoal({ objective: 'work' });
+    const first = await injectOnce(store);
+    await store.incrementTurn();
+    await store.recordTokenUsage(123);
+    expect(await injectOnce(store)).toBe(first);
+  });
+
   it('includes budget lines', async () => {
     const store = makeStore();
     await store.createGoal({ objective: 'work' });
@@ -124,12 +143,14 @@ describe('GoalInjector content', () => {
     expect(text).not.toContain('120m00s');
   });
 
-  it('uses the within-budget band below 75 percent', async () => {
+  it('shows configured usage without generic progress guidance below 75 percent', async () => {
     const store = makeStore();
     await store.createGoal({ objective: 'work' });
     await store.setBudgetLimits({ budgetLimits: { turnBudget: 10 } }, 'model');
     const text = (await injectOnce(store))!;
-    expect(text).toContain('within budget');
+    expect(text).toContain('Budgets: turns 0/10');
+    expect(text).not.toContain('within budget');
+    expect(text).not.toContain('A hard budget is nearing its limit');
   });
 
   it('uses the convergence band at or above 75 percent', async () => {
@@ -140,8 +161,8 @@ describe('GoalInjector content', () => {
     await store.incrementTurn();
     await store.incrementTurn(); // 3/4 = 75%
     const text = (await injectOnce(store))!;
-    expect(text).toContain('nearing a budget');
-    expect(text).toContain('avoid starting new discretionary work');
+    expect(text).toContain('A hard budget is nearing its limit');
+    expect(text).toContain('avoid optional scope');
   });
 
   it('has no separate over-budget guidance (the runtime auto-blocks instead)', async () => {
@@ -151,10 +172,8 @@ describe('GoalInjector content', () => {
     await store.incrementTurn();
     await store.incrementTurn(); // 2/2 = 100%
     const text = (await injectOnce(store))!;
-    // The stale "report the best terminal state via UpdateGoal" line is gone;
-    // over budget falls into the same "nearing" convergence nudge.
     expect(text).not.toContain('report the best terminal state');
-    expect(text).toContain('nearing a budget');
+    expect(text).toContain('A hard budget is nearing its limit');
   });
 
   it('tells the model to call UpdateGoal to finish', async () => {
@@ -194,6 +213,15 @@ describe('InjectionManager goal integration', () => {
     expect(goalRecords).toHaveLength(1);
     const text = JSON.stringify(goalRecords[0]);
     expect(text).toContain('<untrusted_objective>');
+    expect(goalRecords[0]).toMatchObject({
+      message: {
+        origin: {
+          kind: 'injection',
+          variant: 'goal',
+          disclosure: { status: 'active', goalId: expect.any(String) },
+        },
+      },
+    });
   });
 
   it('the per-step inject() loop does NOT add a goal reminder (boundary cadence)', async () => {

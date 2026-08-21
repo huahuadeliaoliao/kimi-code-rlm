@@ -1,5 +1,10 @@
 import type { Agent } from '..';
 
+export interface DynamicInjectionResult {
+  readonly content: string;
+  readonly disclosure?: unknown;
+}
+
 export abstract class DynamicInjector {
   protected injectedAt: number | null = null;
 
@@ -24,16 +29,26 @@ export abstract class DynamicInjector {
 
   async inject(): Promise<void> {
     const injection = await this.getInjection();
-    if (injection) {
-      this.injectedAt = this.agent.context.history.length;
-      this.agent.context.appendSystemReminder(injection, {
-        kind: 'injection',
-        variant: this.injectionVariant,
-      });
-    }
+    if (injection === undefined) return;
+    const result = typeof injection === 'string' ? { content: injection } : injection;
+    if (result.content.length === 0) return;
+    this.injectedAt = this.agent.context.history.length;
+    const origin =
+      result.disclosure === undefined
+        ? { kind: 'injection' as const, variant: this.injectionVariant }
+        : {
+            kind: 'injection' as const,
+            variant: this.injectionVariant,
+            disclosure: result.disclosure,
+          };
+    this.agent.context.appendSystemReminder(result.content, origin);
   }
 
   protected abstract readonly injectionVariant: string;
 
-  protected abstract getInjection(): string | Promise<string | undefined> | undefined;
+  protected abstract getInjection():
+    | string
+    | DynamicInjectionResult
+    | Promise<string | DynamicInjectionResult | undefined>
+    | undefined;
 }

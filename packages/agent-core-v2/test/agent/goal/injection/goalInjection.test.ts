@@ -6,6 +6,7 @@ import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory'
 import { IAgentGoalService } from '#/agent/goal/goal';
 import { type AgentGoalService } from '#/agent/goal/goalService';
 import { IAgentProfileService } from '#/agent/profile/profile';
+import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { IAgentSwarmService } from '#/features/swarm/agent/swarm';
 import {
   InMemoryWireRecordPersistence,
@@ -61,12 +62,16 @@ describe('GoalInjection content', () => {
   let goals: GoalServiceTestManager;
   let context: IAgentContextMemoryService;
   let injector: InjectableContextInjector;
+  let profile: IAgentProfileService;
+  let toolRegistry: IAgentToolRegistryService;
 
   beforeEach(() => {
     ctx = createTestAgent(agentService(IAgentSwarmService, stubAgentSwarm()));
     goals = ctx.get(IAgentGoalService) as GoalServiceTestManager;
     context = ctx.get(IAgentContextMemoryService);
     injector = ctx.get(IAgentContextInjectorService) as InjectableContextInjector;
+    profile = ctx.get(IAgentProfileService);
+    toolRegistry = ctx.get(IAgentToolRegistryService);
   });
 
   afterEach(async () => {
@@ -94,6 +99,7 @@ describe('GoalInjection content', () => {
       await goals.createGoal({ objective: 'work' });
       await goals.pauseGoal();
     }))!;
+    expect(text).toContain('<goal_state>paused</goal_state>');
     expect(text).toContain('<untrusted_objective>\nwork\n</untrusted_objective>');
   });
 
@@ -110,15 +116,21 @@ describe('GoalInjection content', () => {
       await goals.createGoal({ objective: 'work' });
       await goals.markBlocked({ reason: 'no progress' });
     }))!;
+    expect(text).toContain('<goal_state>blocked</goal_state>');
     expect(text).toContain('no progress');
     expect(text).toContain('<untrusted_objective>\nwork\n</untrusted_objective>');
   });
 
-  it('wraps the objective for an active goal', async () => {
+  it('wraps the objective for an active goal without generic status counters', async () => {
     const text = (await readGoalReminder(async (goals) => {
       await goals.createGoal({ objective: 'Ship feature X' });
     }))!;
+    expect(text).toContain('<goal_state>active</goal_state>');
     expect(text).toContain('<untrusted_objective>\nShip feature X\n</untrusted_objective>');
+    expect(text).not.toContain('Status: active');
+    expect(text).not.toContain('Progress:');
+    expect(text).not.toContain('Budget guidance:');
+    expect(text).not.toContain('Budgets:');
   });
 
   it('wraps the completion criterion when present', async () => {
@@ -144,6 +156,18 @@ describe('GoalInjection content', () => {
     expect(text.match(/<\/untrusted_completion_criterion>/g)).toHaveLength(1);
   });
 
+  it('keeps an unbudgeted active reminder stable as turn and usage counters change', async () => {
+    await goals.createGoal({ objective: 'work' });
+    await injectDynamic(injector, true);
+    const first = lastGoalReminder(context);
+
+    await goals.incrementTurn();
+    await goals.recordTokenUsage(123);
+    await injectDynamic(injector, true);
+
+    expect(lastGoalReminder(context)).toBe(first);
+  });
+
   it('includes budget lines', async () => {
     const text = (await readGoalReminder(async (goals) => {
       await goals.createGoal({ objective: 'work' });
@@ -154,12 +178,15 @@ describe('GoalInjection content', () => {
     expect(text).toContain('turns 0/5');
   });
 
-  it('uses the within-budget band below 75 percent', async () => {
+  it('shows configured usage without generic progress guidance below 75 percent', async () => {
     const text = (await readGoalReminder(async (goals) => {
       await goals.createGoal({ objective: 'work' });
       await goals.setBudgetLimits({ budgetLimits: { turnBudget: 10 } }, 'model');
     }))!;
-    expect(text).toContain('within budget');
+    expect(text).toContain('Budgets: turns 0/10');
+    expect(text).not.toContain('within budget');
+    expect(text).not.toContain('Progress:');
+    expect(text).not.toContain('A hard budget is nearing its limit');
   });
 
   it('uses the convergence band at or above 75 percent', async () => {
@@ -170,8 +197,8 @@ describe('GoalInjection content', () => {
       await goals.incrementTurn();
       await goals.incrementTurn();
     }))!;
-    expect(text).toContain('nearing a budget');
-    expect(text).toContain('avoid starting new discretionary work');
+    expect(text).toContain('A hard budget is nearing its limit');
+    expect(text).toContain('avoid optional scope');
   });
 
   it('shows a blocked note once a budget is reached', async () => {
@@ -193,7 +220,33 @@ describe('GoalInjection content', () => {
     expect(text).toContain('UpdateGoal');
   });
 
-  it('references the SetGoalBudget tool', async () => {
+  it('does not reference SetGoalBudget when that tool is inactive', async () => {
+    profile.update({ activeToolNames: ['CreateGoal', 'GetGoal', 'UpdateGoal'] });
+    const text = (await readGoalReminder(async (goals) => {
+      await goals.createGoal({ objective: 'work for up to 20 turns' });
+    }))!;
+    expect(text).not.toContain('SetGoalBudget');
+    expect(text).not.toContain('WaitFor');
+    expect(text).not.toContain('background sub-agents');
+    expect(text).not.toMatch(
+      /self-audit|Completion audit|Blocked audit|bounded, useful|end the turn normally|choose one useful slice/i,
+    );
+  });
+
+  it('keeps UpdateGoal focused on state transitions rather than work slicing', () => {
+    const description = toolRegistry.resolve('UpdateGoal')?.description ?? '';
+    expect(description).toContain(
+      'Do not call this tool to record progress, checkpoint a phase, or request another turn.',
+    );
+    expect(description).not.toMatch(
+      /complete one useful slice|end the turn normally|runtime will prompt you to continue/i,
+    );
+  });
+
+  it('references SetGoalBudget only when that tool is active', async () => {
+    profile.update({
+      activeToolNames: ['CreateGoal', 'GetGoal', 'SetGoalBudget', 'UpdateGoal'],
+    });
     const text = (await readGoalReminder(async (goals) => {
       await goals.createGoal({ objective: 'work for up to 20 turns' });
     }))!;
@@ -205,11 +258,17 @@ describe('GoalInjection content', () => {
       await goals.createGoal({ objective: 'Ship feature X', completionCriterion: 'tests pass' });
       await goals.setBudgetLimits({ budgetLimits: { tokenBudget: 100, turnBudget: 5 } }, 'model');
     }))!;
-    expect(text).not.toContain('\n\n\n');
+    expect(text).not.toContain('self-audit');
+    expect(text).not.toContain('Completion audit');
+    expect(text).not.toContain('Blocked audit');
+    expect(text).toContain('<goal_state>active</goal_state>');
     expect(text).toContain('</untrusted_objective>\n<untrusted_completion_criterion>');
-    expect(text).toContain('</untrusted_completion_criterion>\n\nStatus: active');
-    expect(text).toMatch(/Progress: [^\n]*\.\nBudgets: /);
-    expect(text).toMatch(/Budgets: [^\n]*\.\nBudget guidance: /);
+    expect(text).toMatch(/<\/untrusted_completion_criterion>\nBudgets: /);
+    expect(text).not.toContain('Status: active');
+    expect(text).not.toContain('Progress:');
+    expect(text).not.toContain('Budget guidance:');
+    expect(text).not.toContain('A hard budget is nearing its limit');
+    expect(text).not.toContain('\n\n\n');
   });
 });
 
@@ -273,6 +332,15 @@ describe('GoalInjection integration', () => {
       expect(goalRecords).toHaveLength(1);
       const text = JSON.stringify(goalRecords[0]);
       expect(text).toContain('<untrusted_objective>');
+      expect(goalRecords[0]).toMatchObject({
+        message: {
+          origin: {
+            kind: 'injection',
+            variant: 'goal',
+            disclosure: { status: 'active', goalId: expect.any(String) },
+          },
+        },
+      });
     });
 
     it('dynamic injection writes at most once for one turn boundary', async () => {
