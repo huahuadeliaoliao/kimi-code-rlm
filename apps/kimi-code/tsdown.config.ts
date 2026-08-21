@@ -29,6 +29,7 @@ export default defineConfig({
   },
   define: {
     [BUILT_IN_CATALOG_DEFINE]: builtInCatalogDefine(),
+    __KIMI_CODE_LOCAL_RLM_BUILD__: 'true',
   },
   deps: {
     onlyBundle: false,

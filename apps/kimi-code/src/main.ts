@@ -22,6 +22,7 @@ import {
   withTelemetryContext,
 } from '@moonshot-ai/kimi-telemetry';
 
+import { IS_LOCAL_RLM_BUILD } from './cli/build-info';
 import { createProgram } from './cli/commands';
 import { finalizeHeadlessRun } from './cli/headless-exit';
 import { startupTrace } from './utils/startup-trace';
@@ -73,14 +74,16 @@ export async function handleMainCommand(
     throw error;
   }
 
-  startupTrace('preflight:begin');
-  const preflightResult = await runUpdatePreflight(
-    version,
-    validated.uiMode === 'print' ? { track, isTTY: false } : { track },
-  );
-  startupTrace('preflight:end');
-  if (preflightResult === 'exit') {
-    process.exit(0);
+  if (!IS_LOCAL_RLM_BUILD) {
+    startupTrace('preflight:begin');
+    const preflightResult = await runUpdatePreflight(
+      version,
+      validated.uiMode === 'print' ? { track, isTTY: false } : { track },
+    );
+    startupTrace('preflight:end');
+    if (preflightResult === 'exit') {
+      process.exit(0);
+    }
   }
 
   if (validated.uiMode === 'print') {
@@ -99,6 +102,12 @@ async function handleMigrateCommand(version: string): Promise<void> {
 }
 
 export async function handleUpgradeCommand(version: string): Promise<void> {
+  if (IS_LOCAL_RLM_BUILD) {
+    process.stdout.write(
+      'This is a local RLM build. Install a newer local package explicitly, or reinstall the official Kimi Code package to switch back.\n',
+    );
+    return;
+  }
   const telemetryBootstrap = createCliTelemetryBootstrap();
   const telemetryClient: TelemetryClient = {
     track,
@@ -147,6 +156,10 @@ const MIGRATE_CLI_OPTIONS: CLIOptions = {
 export function main(): void {
   process.title = PROCESS_NAME;
   installCrashHandlers();
+  if (IS_LOCAL_RLM_BUILD) {
+    bootstrap();
+    return;
+  }
   // A staged native update is swapped in and re-exec'd here, before any other
   // initialization, so the user session immediately runs the new binary (and
   // the old process never replaces itself while running). Every failure path

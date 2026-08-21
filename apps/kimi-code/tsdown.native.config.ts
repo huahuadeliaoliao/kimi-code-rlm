@@ -52,6 +52,7 @@ export default defineConfig({
     __KIMI_CODE_CHANNEL__: JSON.stringify(process.env['KIMI_CODE_CHANNEL'] ?? ''),
     __KIMI_CODE_COMMIT__: JSON.stringify(process.env['KIMI_CODE_COMMIT'] ?? ''),
     __KIMI_CODE_BUILD_TARGET__: JSON.stringify(buildTarget()),
+    __KIMI_CODE_LOCAL_RLM_BUILD__: 'true',
     __KIMI_CODE_NATIVE_BUNDLE__: 'true',
   },
   deps: {

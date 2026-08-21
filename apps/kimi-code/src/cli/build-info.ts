@@ -2,6 +2,7 @@ declare const __KIMI_CODE_VERSION__: string | undefined;
 declare const __KIMI_CODE_CHANNEL__: string | undefined;
 declare const __KIMI_CODE_COMMIT__: string | undefined;
 declare const __KIMI_CODE_BUILD_TARGET__: string | undefined;
+declare const __KIMI_CODE_LOCAL_RLM_BUILD__: boolean | undefined;
 
 export interface KimiBuildInfo {
   readonly version?: string;
@@ -13,6 +14,9 @@ export interface KimiBuildInfo {
 function optionalBuildString(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
+
+export const IS_LOCAL_RLM_BUILD =
+  typeof __KIMI_CODE_LOCAL_RLM_BUILD__ === 'boolean' && __KIMI_CODE_LOCAL_RLM_BUILD__;
 
 export const KIMI_BUILD_INFO: KimiBuildInfo = {
   version:
