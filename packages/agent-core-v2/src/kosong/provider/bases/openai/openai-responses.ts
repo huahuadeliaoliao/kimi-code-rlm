@@ -1,4 +1,15 @@
 import OpenAI from 'openai';
+import type {
+  EasyInputMessage,
+  FunctionTool,
+  ResponseCreateParamsStreaming,
+  ResponseFunctionCallOutputItemList,
+  ResponseFunctionToolCall,
+  ResponseInput,
+  ResponseInputContent,
+  ResponseInputItem,
+  ResponseInputMessageContentList,
+} from 'openai/resources/responses/responses.js';
 
 import { Error2 } from '#/_base/errors/errors';
 import {
@@ -48,6 +59,13 @@ import {
   resolveAuthBackedClient,
 } from '../request-auth';
 import { normalizeToolCallIdsForProvider, sanitizeOpenAIResponsesCallId } from '../tool-call-id';
+import {
+  OpenAIResponsesReplayLedger,
+  type ResponsesOutputItem,
+  type ResponsesReplayCapture,
+  type ResponsesReplayParent,
+  type ResponsesReplayResolution,
+} from './openai-responses-replay';
 
 function normalizeResponsesFinishReason(
   status: string | null | undefined,
@@ -86,6 +104,8 @@ const OPENAI_RESPONSES_TOOL_CALL_ID_POLICY: ToolCallIdPolicy = {
 type ResponseOutputItemView =
   | {
       type: 'message';
+      itemId?: string;
+      phase?: 'commentary' | 'final_answer' | null;
       content: RawObject[];
     }
   | {
@@ -97,8 +117,10 @@ type ResponseOutputItemView =
     }
   | {
       type: 'reasoning';
+      itemId?: string;
       encryptedContent?: string;
       summary: RawObject[];
+      content: RawObject[];
     }
   | {
       type: 'other';
@@ -173,8 +195,11 @@ function readResponseOutputItem(value: unknown, context: string): ResponseOutput
   const type = requireStringField(item, 'type', context);
 
   if (type === 'message') {
+    const phase = item['phase'];
     return {
       type,
+      itemId: readStringField(item, 'id'),
+      phase: phase === 'commentary' || phase === 'final_answer' || phase === null ? phase : undefined,
       content: readObjectArrayField(item, 'content') ?? [],
     };
   }
@@ -192,8 +217,10 @@ function readResponseOutputItem(value: unknown, context: string): ResponseOutput
   if (type === 'reasoning') {
     return {
       type,
+      itemId: readStringField(item, 'id'),
       encryptedContent: readStringField(item, 'encrypted_content'),
       summary: readObjectArrayField(item, 'summary') ?? [],
+      content: readObjectArrayField(item, 'content') ?? [],
     };
   }
 
@@ -376,18 +403,6 @@ export interface OpenAIResponsesGenerationKwargs {
   [key: string]: unknown;
 }
 
-interface ResponseInputItem {
-  [key: string]: unknown;
-}
-
-interface ResponseToolParam {
-  type: string;
-  name: string;
-  description: string;
-  parameters: Record<string, unknown>;
-  strict: boolean;
-}
-
 function responseFormatToResponsesText(format: ResponseFormat): Record<string, unknown> {
   if (format.type === 'json_object') {
     return { format: { type: 'json_object' } };
@@ -406,8 +421,18 @@ function responseFormatToResponsesText(format: ResponseFormat): Record<string, u
 const OMITTED_AUDIO_PLACEHOLDER = '(audio omitted: unsupported audio format)';
 const OMITTED_VIDEO_PLACEHOLDER = '(video omitted: not supported by this provider)';
 
-function contentPartsToInputItems(parts: ContentPart[]): unknown[] {
-  const items: unknown[] = [];
+function isChatGptCodexBaseUrl(baseUrl: string | undefined): boolean {
+  if (baseUrl === undefined) return false;
+  try {
+    const url = new URL(baseUrl);
+    return url.hostname === 'chatgpt.com' && url.pathname.replace(/\/+$/, '').endsWith('/codex');
+  } catch {
+    return false;
+  }
+}
+
+function contentPartsToInputItems(parts: ContentPart[]): ResponseInputMessageContentList {
+  const items: ResponseInputMessageContentList = [];
   for (const part of parts) {
     switch (part.type) {
       case 'text':
@@ -437,18 +462,17 @@ function contentPartsToInputItems(parts: ContentPart[]): unknown[] {
   return items;
 }
 
-function contentPartsToOutputItems(parts: ContentPart[]): unknown[] {
-  const items: unknown[] = [];
-  for (const part of parts) {
-    if (part.type === 'text' && part.text) {
-      items.push({ type: 'output_text', text: part.text, annotations: [] });
-    }
-  }
-  return items;
+function contentPartsToAssistantText(parts: ContentPart[]): string {
+  return parts
+    .filter((part): part is Extract<ContentPart, { type: 'text' }> => part.type === 'text')
+    .map((part) => part.text)
+    .join('');
 }
 
-function messageContentToFunctionOutputItems(content: ContentPart[]): unknown[] {
-  const items: unknown[] = [];
+function messageContentToFunctionOutputItems(
+  content: ContentPart[],
+): ResponseFunctionCallOutputItemList {
+  const items: ResponseFunctionCallOutputItemList = [];
   for (const part of content) {
     switch (part.type) {
       case 'text':
@@ -474,7 +498,7 @@ function messageContentToFunctionOutputItems(content: ContentPart[]): unknown[] 
   return items;
 }
 
-function mapAudioUrlToInputItem(url: string): unknown {
+function mapAudioUrlToInputItem(url: string): ResponseInputContent | null {
   if (url.startsWith('data:audio/')) {
     try {
       const parts = url.split(',', 2);
@@ -522,27 +546,36 @@ export function usesOpenAIResponsesDeveloperRole(modelName: string): boolean {
   return false;
 }
 
+function inferredAssistantPhase(message: Message): EasyInputMessage['phase'] {
+  if (message.partial === true) return undefined;
+  return message.toolCalls.length > 0 ? 'commentary' : undefined;
+}
+
 function convertMessage(
   message: Message,
   modelName: string,
   toolMessageConversion: ToolMessageConversion,
+  toolCallIdOverride?: string,
 ): ResponseInputItem[] {
-  let role: string = message.role;
-  if (usesOpenAIResponsesDeveloperRole(modelName) && role === 'system') {
-    role = 'developer';
-  }
+  const role: EasyInputMessage['role'] =
+    message.role === 'system' && usesOpenAIResponsesDeveloperRole(modelName)
+      ? 'developer'
+      : message.role === 'tool'
+        ? 'user'
+        : message.role;
 
-  if (role === 'tool') {
-    const callId = message.toolCallId ?? '';
-    let output: string | unknown[];
+  if (message.role === 'tool') {
+    const callId = toolCallIdOverride ?? message.toolCallId ?? '';
+    let output: string | ResponseFunctionCallOutputItemList;
     if (toolMessageConversion === 'extract_text') {
       const text = extractText(message);
       output =
         text.length === 0 && message.content.some(isMediaPart)
           ? TOOL_RESULT_MEDIA_PLACEHOLDER
-          : text;
+          : text || '(no tool output)';
     } else {
-      output = messageContentToFunctionOutputItems(message.content);
+      const converted = messageContentToFunctionOutputItems(message.content);
+      output = converted.length > 0 ? converted : '(no tool output)';
     }
     return [
       {
@@ -561,17 +594,20 @@ function convertMessage(
     const flushPendingParts = (): void => {
       if (pendingParts.length === 0) return;
       if (role === 'assistant') {
-        result.push({
-          content: contentPartsToOutputItems(pendingParts),
-          role,
-          type: 'message',
-        });
+        const content = contentPartsToAssistantText(pendingParts);
+        if (content.length > 0) {
+          result.push({
+            content,
+            role,
+            type: 'message',
+            phase: inferredAssistantPhase(message),
+          } satisfies EasyInputMessage);
+        }
       } else {
-        result.push({
-          content: contentPartsToInputItems(pendingParts),
-          role,
-          type: 'message',
-        });
+        const content = contentPartsToInputItems(pendingParts);
+        if (content.length > 0) {
+          result.push({ content, role, type: 'message' } satisfies EasyInputMessage);
+        }
       }
       pendingParts.length = 0;
     };
@@ -584,12 +620,13 @@ function convertMessage(
       if (part.type === 'think') {
         flushPendingParts();
         const encryptedValue = part.encrypted;
-        const summaries: unknown[] = [{ type: 'summary_text', text: part.think }];
+        const summaries: Array<{ type: 'summary_text'; text: string }> = [
+          { type: 'summary_text', text: part.think },
+        ];
         i += 1;
         while (i < n) {
           const nextPart = message.content[i];
-          if (nextPart === undefined) break;
-          if (nextPart.type !== 'think') break;
+          if (nextPart === undefined || nextPart.type !== 'think') break;
           if (nextPart.encrypted !== encryptedValue) break;
           summaries.push({ type: 'summary_text', text: nextPart.think });
           i += 1;
@@ -598,7 +635,7 @@ function convertMessage(
           summary: summaries,
           type: 'reasoning',
           encrypted_content: encryptedValue,
-        });
+        } as unknown as ResponseInputItem);
       } else {
         pendingParts.push(part);
         i += 1;
@@ -614,13 +651,13 @@ function convertMessage(
       call_id: toolCall.id,
       name: toolCall.name,
       type: 'function_call',
-    });
+    } satisfies ResponseFunctionToolCall);
   }
 
   return result;
 }
 
-function convertTool(tool: Tool): ResponseToolParam {
+function convertTool(tool: Tool): FunctionTool {
   return {
     type: 'function',
     name: tool.name,
@@ -634,9 +671,11 @@ function convertHistoryMessages(
   history: readonly Message[],
   modelName: string,
   toolMessageConversion: ToolMessageConversion,
-): unknown[] {
-  const input: unknown[] = [];
-  const pendingToolResultMedia: unknown[] = [];
+  replay?: ResponsesReplayResolution,
+  originalHistory: readonly Message[] = history,
+): ResponseInput {
+  const input: ResponseInput = [];
+  const pendingToolResultMedia: ResponseInputContent[] = [];
 
   const flushPendingMedia = (): void => {
     if (pendingToolResultMedia.length === 0) return;
@@ -648,16 +687,25 @@ function convertHistoryMessages(
     pendingToolResultMedia.length = 0;
   };
 
-  for (const msg of history) {
+  for (let index = 0; index < history.length; index++) {
+    const msg = history[index]!;
     if (isToolDeclarationOnlyMessage(msg)) continue;
-    if (msg.role !== 'tool') {
-      flushPendingMedia();
-    }
-    input.push(...convertMessage(msg, modelName, toolMessageConversion));
-    if (msg.role === 'tool' && toolMessageConversion === 'extract_text') {
-      pendingToolResultMedia.push(
-        ...messageContentToFunctionOutputItems(msg.content.filter(isMediaPart)),
+    if (msg.role !== 'tool') flushPendingMedia();
+    const replayItems = replay?.itemsByHistoryIndex.get(index);
+    if (replayItems !== undefined && msg.role === 'assistant') {
+      input.push(...replayItems.map((item) => structuredClone(item)));
+    } else {
+      const originalToolCallId = originalHistory[index]?.toolCallId;
+      const upstreamToolCallId =
+        originalToolCallId === undefined
+          ? undefined
+          : replay?.upstreamCallIdByAgentCallId.get(originalToolCallId);
+      input.push(
+        ...convertMessage(msg, modelName, toolMessageConversion, upstreamToolCallId),
       );
+    }
+    if (msg.role === 'tool' && toolMessageConversion === 'extract_text') {
+      pendingToolResultMedia.push(...contentPartsToInputItems(msg.content.filter(isMediaPart)));
     }
   }
 
@@ -677,6 +725,9 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
     isStream: boolean,
     private readonly _convertErrorHook?:
       | ((error: unknown) => ChatProviderError | undefined)
+      | undefined,
+    private readonly _onReplayCapture?:
+      | ((capture: ResponsesReplayCapture) => void)
       | undefined,
   ) {
     if (isStream) {
@@ -706,6 +757,13 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
     yield* this._iter;
   }
 
+  private _captureReplay(outputItems: readonly ResponsesOutputItem[]): void {
+    if (outputItems.length === 0 || this._onReplayCapture === undefined) return;
+    try {
+      this._onReplayCapture({ responseId: this._id, outputItems });
+    } catch {}
+  }
+
   private _captureFinishReasonFromResponse(response: RawObject): void {
     const status = readNullableStringField(response, 'status');
     const incomplete = readObjectField(response, 'incomplete_details');
@@ -720,11 +778,12 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
     const outputTokens = readNumberField(usage, 'output_tokens') ?? 0;
     const details = readObjectField(usage, 'input_tokens_details');
     const cached = details ? (readNumberField(details, 'cached_tokens') ?? 0) : 0;
+    const cacheWrite = details ? (readNumberField(details, 'cache_write_tokens') ?? 0) : 0;
     this._usage = {
-      inputOther: inputTokens - cached,
+      inputOther: Math.max(0, inputTokens - cached - cacheWrite),
       output: outputTokens,
       inputCacheRead: cached,
-      inputCacheCreation: 0,
+      inputCacheCreation: cacheWrite,
     };
   }
 
@@ -737,20 +796,26 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
       this._extractUsage(usage);
     }
     this._captureFinishReasonFromResponse(response);
+    if (this._rawFinishReason === 'failed') {
+      throw new ChatProviderError(
+        `OpenAI Responses response.failed: ${formatResponsesFailedResponse(response)}`,
+      );
+    }
 
     const output = readObjectArrayField(response, 'output');
     if (output === undefined) return;
+    this._captureReplay(output);
 
     for (const item of output) {
       const outputItem = readResponseOutputItem(item, 'response.output item');
 
       if (outputItem.type === 'message') {
         for (const contentItem of outputItem.content) {
-          if (contentItem['type'] === 'output_text') {
-            const text = readStringField(contentItem, 'text');
-            if (text !== undefined) {
-              yield { type: 'text', text };
-            }
+          const contentType = contentItem['type'];
+          if (contentType === 'output_text' || contentType === 'refusal') {
+            const text =
+              readStringField(contentItem, 'text') ?? readStringField(contentItem, 'refusal');
+            if (text !== undefined) yield { type: 'text', text };
           }
         }
       } else if (outputItem.type === 'function_call') {
@@ -761,21 +826,19 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
           arguments: outputItem.arguments ?? null,
         } satisfies ToolCall;
       } else if (outputItem.type === 'reasoning') {
-        let hasReasoningSummary = false;
-        for (const summary of outputItem.summary) {
-          const text = readStringField(summary, 'text');
+        const reasoningParts = [...outputItem.summary, ...outputItem.content];
+        let hasReasoning = false;
+        for (const reasoningPart of reasoningParts) {
+          const text = readStringField(reasoningPart, 'text');
           if (text === undefined) continue;
-          hasReasoningSummary = true;
-          const thinkPart: StreamedMessagePart = {
-            type: 'think',
-            think: text,
-          };
+          hasReasoning = true;
+          const thinkPart: StreamedMessagePart = { type: 'think', think: text };
           if (outputItem.encryptedContent !== undefined) {
             (thinkPart as { encrypted: string }).encrypted = outputItem.encryptedContent;
           }
           yield thinkPart;
         }
-        if (!hasReasoningSummary) {
+        if (!hasReasoning) {
           const thinkPart: StreamedMessagePart = { type: 'think', think: '' };
           if (outputItem.encryptedContent !== undefined) {
             (thinkPart as { encrypted: string }).encrypted = outputItem.encryptedContent;
@@ -790,7 +853,69 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
     response: AsyncIterable<RawObject>,
   ): AsyncGenerator<StreamedMessagePart> {
     const functionCallArgumentsByIndex = new Map<number | string, string>();
+    const streamedText = new Map<string, string>();
+    const streamedRefusals = new Map<string, string>();
+    const streamedReasoningSummaries = new Map<string, string>();
+    const streamedReasoningText = new Map<string, string>();
+    const outputItemsByIndex = new Map<number | string, ResponsesOutputItem>();
     let unindexedFunctionCallArguments: string | undefined;
+    let sawTerminal = false;
+
+    const rememberOutputItem = (
+      item: unknown,
+      outputIndex: number | undefined,
+    ): void => {
+      const object = asRawObject(item);
+      if (object === null) return;
+      const key = outputIndex ?? readStringField(object, 'id') ?? `unindexed:${outputItemsByIndex.size}`;
+      outputItemsByIndex.set(key, structuredClone(object));
+    };
+
+    const captureTerminalOutput = (responseObject: RawObject): void => {
+      const terminalOutput = readObjectArrayField(responseObject, 'output') ?? [];
+      for (let index = 0; index < terminalOutput.length; index++) {
+        const terminalItem = terminalOutput[index];
+        if (terminalItem === undefined) continue;
+        const existing = outputItemsByIndex.get(index);
+        outputItemsByIndex.set(
+          index,
+          existing === undefined
+            ? structuredClone(terminalItem)
+            : { ...existing, ...structuredClone(terminalItem) },
+        );
+      }
+      const ordered = [...outputItemsByIndex.entries()]
+        .toSorted(([left], [right]) =>
+          typeof left === 'number' && typeof right === 'number' ? left - right : 0,
+        )
+        .map(([, item]) => item);
+      this._captureReplay(ordered);
+    };
+
+    const contentKey = (chunk: RawObject): string =>
+      `${readStringField(chunk, 'item_id') ?? ''}:${readNumberField(chunk, 'output_index') ?? ''}:${readNumberField(chunk, 'content_index') ?? ''}:${readNumberField(chunk, 'summary_index') ?? ''}`;
+
+    const appendContent = (store: Map<string, string>, chunk: RawObject, value: string): void => {
+      const key = contentKey(chunk);
+      store.set(key, (store.get(key) ?? '') + value);
+    };
+
+    const finalContentSuffix = (
+      store: Map<string, string>,
+      chunk: RawObject,
+      finalValue: string,
+      context: string,
+    ): string => {
+      const key = contentKey(chunk);
+      const accumulated = store.get(key) ?? '';
+      if (!finalValue.startsWith(accumulated)) {
+        throw new ChatProviderError(
+          `OpenAI Responses ${context} does not match the streamed content deltas.`,
+        );
+      }
+      store.set(key, finalValue);
+      return finalValue.slice(accumulated.length);
+    };
 
     const hasFunctionCallArguments = (streamIndex: number | string | undefined): boolean =>
       streamIndex === undefined
@@ -882,9 +1007,38 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
         }
 
         switch (type) {
-          case 'response.output_text.delta':
-            yield { type: 'text', text: requireStringField(chunk, 'delta', type) };
+          case 'response.output_text.delta': {
+            const delta = requireStringField(chunk, 'delta', type);
+            appendContent(streamedText, chunk, delta);
+            yield { type: 'text', text: delta };
             break;
+          }
+          case 'response.output_text.done': {
+            const suffix = finalContentSuffix(
+              streamedText,
+              chunk,
+              requireStringField(chunk, 'text', type),
+              type,
+            );
+            if (suffix.length > 0) yield { type: 'text', text: suffix };
+            break;
+          }
+          case 'response.refusal.delta': {
+            const delta = requireStringField(chunk, 'delta', type);
+            appendContent(streamedRefusals, chunk, delta);
+            yield { type: 'text', text: delta };
+            break;
+          }
+          case 'response.refusal.done': {
+            const suffix = finalContentSuffix(
+              streamedRefusals,
+              chunk,
+              requireStringField(chunk, 'refusal', type),
+              type,
+            );
+            if (suffix.length > 0) yield { type: 'text', text: suffix };
+            break;
+          }
           case 'response.created':
           case 'response.in_progress': {
             const responseObject = requireObjectField(chunk, 'response', type);
@@ -914,9 +1068,67 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
             break;
           }
           case 'response.output_item.done': {
-            const item = readResponseOutputItem(chunk['item'], `${type}.item`);
             const outputIndex = readNumberField(chunk, 'output_index');
-            if (item.type === 'reasoning') {
+            rememberOutputItem(chunk['item'], outputIndex);
+            const item = readResponseOutputItem(chunk['item'], `${type}.item`);
+            if (item.type === 'message') {
+              for (let contentIndex = 0; contentIndex < item.content.length; contentIndex++) {
+                const content = item.content[contentIndex]!;
+                const contentType = content['type'];
+                const syntheticChunk: RawObject = {
+                  item_id: item.itemId,
+                  output_index: outputIndex,
+                  content_index: contentIndex,
+                };
+                if (contentType === 'output_text') {
+                  const suffix = finalContentSuffix(
+                    streamedText,
+                    syntheticChunk,
+                    readStringField(content, 'text') ?? '',
+                    type,
+                  );
+                  if (suffix.length > 0) yield { type: 'text', text: suffix };
+                } else if (contentType === 'refusal') {
+                  const suffix = finalContentSuffix(
+                    streamedRefusals,
+                    syntheticChunk,
+                    readStringField(content, 'refusal') ?? readStringField(content, 'text') ?? '',
+                    type,
+                  );
+                  if (suffix.length > 0) yield { type: 'text', text: suffix };
+                }
+              }
+            } else if (item.type === 'reasoning') {
+              for (let summaryIndex = 0; summaryIndex < item.summary.length; summaryIndex++) {
+                const summary = item.summary[summaryIndex]!;
+                const syntheticChunk: RawObject = {
+                  item_id: item.itemId,
+                  output_index: outputIndex,
+                  summary_index: summaryIndex,
+                };
+                const suffix = finalContentSuffix(
+                  streamedReasoningSummaries,
+                  syntheticChunk,
+                  readStringField(summary, 'text') ?? '',
+                  type,
+                );
+                if (suffix.length > 0) yield { type: 'think', think: suffix };
+              }
+              for (let contentIndex = 0; contentIndex < item.content.length; contentIndex++) {
+                const content = item.content[contentIndex]!;
+                const syntheticChunk: RawObject = {
+                  item_id: item.itemId,
+                  output_index: outputIndex,
+                  content_index: contentIndex,
+                };
+                const suffix = finalContentSuffix(
+                  streamedReasoningText,
+                  syntheticChunk,
+                  readStringField(content, 'text') ?? '',
+                  type,
+                );
+                if (suffix.length > 0) yield { type: 'think', think: suffix };
+              }
               const thinkPart: StreamedMessagePart = { type: 'think', think: '' };
               if (item.encryptedContent !== undefined) {
                 (thinkPart as { encrypted: string }).encrypted = item.encryptedContent;
@@ -924,7 +1136,19 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
               yield thinkPart;
             } else if (item.type === 'function_call' && typeof item.arguments === 'string') {
               const streamIndex = responseStreamIndex(item.itemId, outputIndex);
-              yield* yieldFinalArgumentsSuffix(streamIndex, item.arguments, type);
+              if (hasFunctionCallArguments(streamIndex)) {
+                yield* yieldFinalArgumentsSuffix(streamIndex, item.arguments, type);
+              } else {
+                setFunctionCallArguments(streamIndex, item.arguments);
+                const toolCall: ToolCall = {
+                  type: 'function',
+                  id: functionCallId(item.callId),
+                  name: requireFunctionCallName(item),
+                  arguments: item.arguments,
+                };
+                if (streamIndex !== undefined) toolCall._streamIndex = streamIndex;
+                yield toolCall;
+              }
             }
             break;
           }
@@ -957,11 +1181,41 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
           case 'response.reasoning_summary_part.added':
             yield { type: 'think', think: '' };
             break;
-          case 'response.reasoning_summary_text.delta':
-            yield { type: 'think', think: requireStringField(chunk, 'delta', type) };
+          case 'response.reasoning_summary_text.delta': {
+            const delta = requireStringField(chunk, 'delta', type);
+            appendContent(streamedReasoningSummaries, chunk, delta);
+            yield { type: 'think', think: delta };
             break;
+          }
+          case 'response.reasoning_summary_text.done': {
+            const suffix = finalContentSuffix(
+              streamedReasoningSummaries,
+              chunk,
+              requireStringField(chunk, 'text', type),
+              type,
+            );
+            if (suffix.length > 0) yield { type: 'think', think: suffix };
+            break;
+          }
+          case 'response.reasoning_text.delta': {
+            const delta = requireStringField(chunk, 'delta', type);
+            appendContent(streamedReasoningText, chunk, delta);
+            yield { type: 'think', think: delta };
+            break;
+          }
+          case 'response.reasoning_text.done': {
+            const suffix = finalContentSuffix(
+              streamedReasoningText,
+              chunk,
+              requireStringField(chunk, 'text', type),
+              type,
+            );
+            if (suffix.length > 0) yield { type: 'think', think: suffix };
+            break;
+          }
           case 'response.completed':
           case 'response.incomplete': {
+            sawTerminal = true;
             const responseObject = requireObjectField(chunk, 'response', type);
             const respId = readStringField(responseObject, 'id');
             if (respId !== undefined) {
@@ -972,6 +1226,7 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
               this._extractUsage(usage);
             }
             this._captureFinishReasonFromResponse(responseObject);
+            captureTerminalOutput(responseObject);
             break;
           }
           case 'error': {
@@ -985,6 +1240,7 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
             );
           }
           case 'response.failed': {
+            sawTerminal = true;
             const responseObject = requireObjectField(chunk, 'response', type);
             const error = readResponsesFailedResponseError(responseObject);
             if (error !== undefined) {
@@ -1004,6 +1260,11 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
             break;
         }
       }
+      if (!sawTerminal) {
+        throw new ChatProviderError(
+          'OpenAI Responses stream ended before a terminal response event.',
+        );
+      }
     } catch (error: unknown) {
       throw convertOpenAIError(error, this._convertErrorHook);
     }
@@ -1017,6 +1278,7 @@ export class OpenAIResponsesChatProvider implements ChatProvider {
   private readonly _stream: boolean;
   private readonly _apiKey: string | undefined;
   private readonly _baseUrl: string | undefined;
+  private readonly _chatGptCodexBackend: boolean;
   private readonly _defaultHeaders: Record<string, string> | undefined;
   private readonly _thinkingEffort: ThinkingEffort | undefined;
   private readonly _offEffort: string | undefined;
@@ -1026,11 +1288,13 @@ export class OpenAIResponsesChatProvider implements ChatProvider {
   private readonly _httpClient: unknown;
   private readonly _clientFactory: ((auth: ProviderRequestAuth) => OpenAI) | undefined;
   private readonly _convertErrorHook: ((error: unknown) => ChatProviderError | undefined) | undefined;
+  private readonly _replayLedger = new OpenAIResponsesReplayLedger();
 
   constructor(options: OpenAIResponsesOptions) {
     const apiKey = options.apiKey ?? process.env['OPENAI_API_KEY'];
     this._apiKey = apiKey === undefined || apiKey.length === 0 ? undefined : apiKey;
     this._baseUrl = options.baseUrl ?? 'https://api.openai.com/v1';
+    this._chatGptCodexBackend = isChatGptCodexBaseUrl(this._baseUrl);
     this._defaultHeaders = options.defaultHeaders;
     this._model = options.model;
     this._stream = true;
@@ -1067,14 +1331,21 @@ export class OpenAIResponsesChatProvider implements ChatProvider {
     history: Message[],
     options?: GenerateOptions,
   ): Promise<StreamedMessage> {
-    const input: unknown[] = [];
-
+    const input: ResponseInput = [];
+    const replayParent: ResponsesReplayParent = this._replayLedger.parent(history);
+    const replay = this._replayLedger.resolve(options?.cacheKey, history);
     const normalizedHistory = normalizeToolCallIdsForProvider(
       history,
       OPENAI_RESPONSES_TOOL_CALL_ID_POLICY,
     );
     input.push(
-      ...convertHistoryMessages(normalizedHistory, this._model, this._toolMessageConversion),
+      ...convertHistoryMessages(
+        normalizedHistory,
+        this._model,
+        this._toolMessageConversion,
+        replay,
+        history,
+      ),
     );
 
     let kwargs: Record<string, unknown> = { ...this._generationKwargs };
@@ -1111,11 +1382,14 @@ export class OpenAIResponsesChatProvider implements ChatProvider {
       ) {
         cap = Math.min(cap, options.maxContextTokens - options.usedContextTokens);
       }
-      kwargs = { ...kwargs, max_output_tokens: Math.max(1, cap) };
+      kwargs = { ...kwargs, max_output_tokens: Math.max(16, cap) };
     }
 
     const reasoningEffort = kwargs['reasoning_effort'] as string | undefined;
     delete kwargs['reasoning_effort'];
+    if (this._chatGptCodexBackend) {
+      delete kwargs['max_output_tokens'];
+    }
 
     if (reasoningEffort !== undefined) {
       kwargs['reasoning'] = {
@@ -1133,22 +1407,28 @@ export class OpenAIResponsesChatProvider implements ChatProvider {
 
     try {
       const client = this._createClient(options?.auth);
-      const createParams: Record<string, unknown> = {
+      const convertedTools = tools.map((tool) => convertTool(tool));
+      const createParams: ResponseCreateParamsStreaming = {
         model: this._model,
         input,
-        tools: tools.map((t) => convertTool(t)),
+        tools:
+          this._chatGptCodexBackend && convertedTools.length === 0 ? undefined : convertedTools,
         store: false,
-        stream: this._stream,
+        stream: true,
+        instructions: systemPrompt || undefined,
         ...kwargs,
       };
-      if (systemPrompt) {
-        createParams['instructions'] = systemPrompt;
-      }
       if (options?.responseFormat !== undefined) {
-        createParams['text'] = {
-          ...asRawObject(createParams['text']),
+        createParams.text = {
+          ...asRawObject(createParams.text),
           ...responseFormatToResponsesText(options.responseFormat),
-        };
+        } as ResponseCreateParamsStreaming['text'];
+      } else if (this._chatGptCodexBackend) {
+        createParams.text = { verbosity: 'low' };
+      }
+      if (this._chatGptCodexBackend) {
+        createParams.tool_choice = 'auto';
+        createParams.parallel_tool_calls = true;
       }
 
       if (
@@ -1161,13 +1441,26 @@ export class OpenAIResponsesChatProvider implements ChatProvider {
         );
       }
 
+      const requestOptions: {
+        signal?: AbortSignal;
+        headers?: Record<string, string>;
+      } = { signal: options?.signal };
+      if (this._chatGptCodexBackend && options?.cacheKey !== undefined) {
+        requestOptions.headers = {
+          'session-id': options.cacheKey,
+          'x-client-request-id': options.cacheKey,
+        };
+      }
       options?.onRequestSent?.();
-      const response = await (
-        client.responses as {
-          create(params: unknown, opts?: unknown): Promise<unknown>;
-        }
-      ).create(createParams, options?.signal ? { signal: options.signal } : undefined);
-      return new OpenAIResponsesStreamedMessage(response, this._stream, this._convertErrorHook);
+      const response = await client.responses.create(createParams, requestOptions);
+      return new OpenAIResponsesStreamedMessage(
+        response,
+        this._stream,
+        this._convertErrorHook,
+        (capture) => {
+          this._replayLedger.record(options?.cacheKey, replayParent, capture);
+        },
+      );
     } catch (error: unknown) {
       throw convertOpenAIError(error, this._convertErrorHook);
     }
